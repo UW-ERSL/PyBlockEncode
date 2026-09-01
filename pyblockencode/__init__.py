@@ -27,7 +27,8 @@ poisson_pattern     PoissonEncoding
 elasticity_pattern  ElasticityEncoding
 qiskit_encoding     PauliBlockEncoding, PoissonCircuit, ElasticityCircuit
 linear_circuits     the same circuits with an O(m)-Toffoli incrementer
-smoke_test          python -m pyblockencode.smoke_test
+
+The verification harness lives at the repository root: ``python smoke_test.py``.
 """
 from __future__ import annotations
 
