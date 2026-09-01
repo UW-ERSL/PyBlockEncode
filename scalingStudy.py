@@ -16,7 +16,7 @@ That caps you at m = 1 or 2.  Resource counting needs no simulation at all,
 only transpilation, which is polynomial.  So correctness and cost are two
 separate studies:
 
-    correctness -> ElasticityPatternEncoding.verify()   (dense, m <= 3)
+    correctness -> ElasticityEncoding.verify()   (dense, m <= 3)
                    ElasticityCircuit.verify()           (gate level, m = 1)
     cost        -> this script                          (transpile, m >> 3)
 

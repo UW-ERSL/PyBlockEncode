@@ -37,8 +37,8 @@ from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Operator, SparsePauliOp
 
-from .poisson_pattern import PoissonPatternEncoding
-from .elasticity_pattern import ElasticityPatternEncoding
+from .poisson_pattern import PoissonEncoding
+from .elasticity_pattern import ElasticityEncoding
 from . import operators
 
 
@@ -225,12 +225,12 @@ class PoissonCircuit:
 
     Parameters
     ----------
-    m, dim, disc, bc : as for ``PoissonPatternEncoding``.
+    m, dim, disc, bc : as for ``PoissonEncoding``.
     """
 
     def __init__(self, m: int, dim: int = 1, disc: str = 'fdm',
                  bc: str = 'essential'):
-        self.enc = PoissonPatternEncoding(m=m, dim=dim, disc=disc, bc=bc)
+        self.enc = PoissonEncoding(m=m, dim=dim, disc=disc, bc=bc)
         self.m, self.dim, self.disc = m, dim, disc
 
     alpha = property(lambda self: self.enc.alpha)
@@ -330,7 +330,7 @@ class ElasticityCircuit:
 
     def __init__(self, m: int, E: float = 1.0, nu: float = 0.3,
                  bc: str = 'essential'):
-        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu, bc=bc)
+        self.enc = ElasticityEncoding(m=m, E=E, nu=nu, bc=bc)
         self.m, self.E, self.nu = m, E, nu
 
     alpha = property(lambda self: self.enc.alpha)

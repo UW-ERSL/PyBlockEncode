@@ -225,7 +225,7 @@ def _spec_norm(m: int, nu: float) -> float:
 
 
 def fig_alpha(mmax_norm: int = 8):
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
 
     ratios: dict = {}
     nus = [0.0, 0.3, 0.45]
@@ -246,7 +246,7 @@ def fig_alpha(mmax_norm: int = 8):
     axL.set_axisbelow(True); axL.grid(True)
     axL.plot(nn, closed, color=C_BLUE, lw=1.4, zorder=3,
              label=r'$E(33+\nu)\,/\,6(1-\nu^{2})$')
-    pts = [ElasticityPatternEncoding(m=3, nu=v).alpha for v in nus]
+    pts = [ElasticityEncoding(m=3, nu=v).alpha for v in nus]
     axL.plot(nus, pts, ls='none', marker='o', mfc='white', mec=C_BLUE,
              mew=1.2, zorder=4, label=r'$\sum_k |c_k|$ from the circuit')
     for v, a in zip(nus, pts):
@@ -263,7 +263,7 @@ def fig_alpha(mmax_norm: int = 8):
     axR.set_axisbelow(True); axR.grid(True)
     for nu, col, mk in zip(nus, (C_BLUE, C_ORANGE, C_AQUA), ('o', 's', '^')):
         ms = sorted(int(k) for k in ratios[f"{nu}"])
-        a = ElasticityPatternEncoding(m=3, nu=nu).alpha
+        a = ElasticityEncoding(m=3, nu=nu).alpha
         y = [a / ratios[f"{nu}"][str(m)] for m in ms]
         axR.plot(ms, y, marker=mk, color=col, label=rf'$\nu={nu}$', zorder=4)
         axR.axhline((33 + nu) / 24, color=col, lw=0.8, ls=':', zorder=2)
@@ -292,7 +292,7 @@ def fig_boundary(nu: float = 0.3):
     Pauli component appears as soon as one direction carries a diagonal
     correction.
     """
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
 
     cases = [
         ("periodic", "periodic"),
@@ -303,7 +303,7 @@ def fig_boundary(nu: float = 0.3):
     ]
     labels, Ls, alphas, four = [], [], [], []
     for label, spec in cases:
-        e = ElasticityPatternEncoding(m=3, nu=nu, bc=spec)
+        e = ElasticityEncoding(m=3, nu=nu, bc=spec)
         labels.append(label)
         Ls.append(e.num_terms)
         alphas.append(e.alpha)

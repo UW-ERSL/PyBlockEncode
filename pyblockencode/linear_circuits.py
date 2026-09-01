@@ -66,8 +66,8 @@ from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Operator
 
-from .poisson_pattern import PoissonPatternEncoding
-from .elasticity_pattern import ElasticityPatternEncoding
+from .poisson_pattern import PoissonEncoding
+from .elasticity_pattern import ElasticityEncoding
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ def _prep_amps(coeffs: np.ndarray, width: int) -> np.ndarray:
 class LinearPoissonCircuit:
     """O(m)-Toffoli block encoding of the d-dimensional Laplacian (FDM or FEM).
 
-    Parameters mirror PoissonPatternEncoding: m qubits per dimension
+    Parameters mirror PoissonEncoding: m qubits per dimension
     (N = 2**m interior nodes), dim in {1,2,3}, disc in {'fdm','fem'}.
     """
 
@@ -204,7 +204,7 @@ class LinearPoissonCircuit:
         self.m = m
         self.dim = dim
         self.disc = disc
-        self.enc = PoissonPatternEncoding(m=m, dim=dim, disc=disc, bc=bc)
+        self.enc = PoissonEncoding(m=m, dim=dim, disc=disc, bc=bc)
 
     @property
     def alpha(self) -> float:
@@ -297,7 +297,7 @@ class LinearElasticityCircuit:
         self.m = m
         self.E = E
         self.nu = nu
-        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu, bc=bc)
+        self.enc = ElasticityEncoding(m=m, E=E, nu=nu, bc=bc)
 
     @property
     def alpha(self) -> float:

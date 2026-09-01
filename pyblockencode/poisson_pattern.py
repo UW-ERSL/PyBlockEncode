@@ -45,7 +45,7 @@ from . import bc as _bc
 from . import operators
 
 
-class PoissonPatternEncoding:
+class PoissonEncoding:
     """
     Shift-decomposition block encoding of the Poisson stiffness operator.
 
@@ -272,3 +272,7 @@ class PoissonPatternEncoding:
             out["unitarity_err"] = float(
                 np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
         return out
+
+#: Deprecated name kept for the published API; "pattern compression" was
+#: renamed "shift decomposition" and the class name followed.
+PoissonPatternEncoding = PoissonEncoding

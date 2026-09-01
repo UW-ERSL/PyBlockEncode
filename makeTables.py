@@ -107,11 +107,11 @@ def table_lcu(nu: float = 0.3) -> None:
     asserted rather than assumed, so if the decomposition ever changes the
     table fails loudly instead of printing a wrong caption.
     """
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
 
     # Table 1 of the paper is Proposition 1: the periodic operator, before
     # any boundary treatment splits the shifts.
-    enc = ElasticityPatternEncoding(m=3, E=1.0, nu=nu, bc='periodic')
+    enc = ElasticityEncoding(m=3, E=1.0, nu=nu, bc='periodic')
     terms = enc.lcu_terms()
     assert len(terms) == 17, f"expected the 17 periodic terms, got {len(terms)}"
 
@@ -198,7 +198,7 @@ $\sigma_r$ & stencil offsets $(U^{{(x)}}_p, U^{{(y)}}_q)$ & \# &
 
 def table_boundary(nu: float = 0.3) -> None:
     """L, alpha and the Pauli components under each boundary treatment."""
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
 
     cases = [
         ("none (periodic)", "periodic"),
@@ -209,12 +209,12 @@ def table_boundary(nu: float = 0.3) -> None:
     ]
     rows = []
     for label, spec in cases:
-        e = ElasticityPatternEncoding(m=3, E=1.0, nu=nu, bc=spec)
+        e = ElasticityEncoding(m=3, E=1.0, nu=nu, bc=spec)
         comps = ", ".join(SYM[c] for c in e.components)
         rows.append(f"{label} & {comps} & ${e.num_terms}$ & "
                     f"${e.alpha:.3f}$ & ${e.num_qubits}$ \\\\")
 
-    e13 = ElasticityPatternEncoding(m=3, E=1.0, nu=1 / 3, bc="free")
+    e13 = ElasticityEncoding(m=3, E=1.0, nu=1 / 3, bc="free")
 
     body = rf"""\begin{{table}}[t]
 \centering
@@ -248,16 +248,16 @@ Edges clamped & Pauli components & $L$ & $\alpha$ & qubits \\
 # ---------------------------------------------------------------------------
 
 def table_resources(gc: dict) -> None:
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
     from pyblockencode.linear_circuits import LinearElasticityCircuit
 
-    a0 = ElasticityPatternEncoding(m=3, nu=0.0).alpha
-    a3 = ElasticityPatternEncoding(m=3, nu=0.3).alpha
-    a45 = ElasticityPatternEncoding(m=3, nu=0.45).alpha
+    a0 = ElasticityEncoding(m=3, nu=0.0).alpha
+    a3 = ElasticityEncoding(m=3, nu=0.3).alpha
+    a45 = ElasticityEncoding(m=3, nu=0.45).alpha
 
-    per = ElasticityPatternEncoding(m=3, nu=0.3, bc='periodic')
-    ess = ElasticityPatternEncoding(m=3, nu=0.3, bc='essential')
-    fre = ElasticityPatternEncoding(m=3, nu=0.3, bc='free')
+    per = ElasticityEncoding(m=3, nu=0.3, bc='periodic')
+    ess = ElasticityEncoding(m=3, nu=0.3, bc='essential')
+    fre = ElasticityEncoding(m=3, nu=0.3, bc='free')
 
     # abstract LCU accounting, and the extra ancillas the linear-depth
     # implementation asks for on top of it

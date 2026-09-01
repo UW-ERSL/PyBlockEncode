@@ -81,13 +81,13 @@ def test_bc(results: list) -> None:
 
 
 def test_poisson(results: list) -> None:
-    from pyblockencode.poisson_pattern import PoissonPatternEncoding
+    from pyblockencode.poisson_pattern import PoissonEncoding
 
     print("\n-- Poisson -------------------------------------------------")
     for dim in (1, 2, 3):
         for disc in ("fdm", "fem"):
             for b in ("periodic", "essential", "free"):
-                enc = PoissonPatternEncoding(m=2, dim=dim, disc=disc, bc=b)
+                enc = PoissonEncoding(m=2, dim=dim, disc=disc, bc=b)
                 r = enc.verify()
                 tag = f"{dim}D {disc} {b}"
                 _check(f"{tag}: decomposition",
@@ -104,7 +104,7 @@ def test_poisson(results: list) -> None:
     for label, spec in [("x clamped, y free", {"x": "essential", "y": "free"}),
                         ("clamped left only", ("clamped", "free")),
                         ("per-direction list", ["essential", "free"])]:
-        enc = PoissonPatternEncoding(m=2, dim=2, disc="fem", bc=spec)
+        enc = PoissonEncoding(m=2, dim=2, disc="fem", bc=spec)
         r = enc.verify()
         _check(f"{label}: decomposition", r["decomposition_rel_err"], results)
         _check_eq(f"{label}: L == |Bx|*|By|", enc.num_terms,
@@ -112,21 +112,21 @@ def test_poisson(results: list) -> None:
 
     print("\n-- Poisson, L and alpha constant in N -----------------------")
     for b in ("periodic", "essential", "free"):
-        Ls = [PoissonPatternEncoding(m=m, dim=2, disc="fem", bc=b).num_terms
+        Ls = [PoissonEncoding(m=m, dim=2, disc="fem", bc=b).num_terms
               for m in (2, 3, 4, 5)]
-        als = [PoissonPatternEncoding(m=m, dim=2, disc="fem", bc=b).alpha
+        als = [PoissonEncoding(m=m, dim=2, disc="fem", bc=b).alpha
                for m in (2, 3, 4, 5)]
         _check_eq(f"{b}: L constant", len(set(Ls)), 1, results)
         _check(f"{b}: alpha constant", float(max(als) - min(als)), results)
 
     print("\n-- Poisson, no flag qubit ----------------------------------")
-    enc = PoissonPatternEncoding(m=3, dim=2, disc="fem", bc="essential")
+    enc = PoissonEncoding(m=3, dim=2, disc="fem", bc="essential")
     _check_eq("ancilla == ceil(log2 L)", enc.num_ancilla,
               math.ceil(math.log2(enc.num_terms)), results)
 
 
 def test_elasticity(results: list) -> None:
-    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+    from pyblockencode.elasticity_pattern import ElasticityEncoding
 
     print("\n-- Elasticity ----------------------------------------------")
     cases = [
@@ -139,7 +139,7 @@ def test_elasticity(results: list) -> None:
         ("traction-free", "free", 109, ("I", "Z", "X", "iY")),
     ]
     for label, spec, want_L, want_comp in cases:
-        enc = ElasticityPatternEncoding(m=2, nu=0.3, bc=spec)
+        enc = ElasticityEncoding(m=2, nu=0.3, bc=spec)
         r = enc.verify()
         _check_eq(f"{label}: L", enc.num_terms, want_L, results)
         _check_eq(f"{label}: components", enc.components, want_comp, results)
@@ -152,17 +152,17 @@ def test_elasticity(results: list) -> None:
 
     print("\n-- Elasticity, alpha ---------------------------------------")
     for nu in (0.0, 0.3, 0.45):
-        enc = ElasticityPatternEncoding(m=2, nu=nu, bc="essential")
+        enc = ElasticityEncoding(m=2, nu=nu, bc="essential")
         _check(f"nu={nu}: alpha matches E(33+nu)/(6(1-nu^2))",
                abs(enc.alpha - enc.alpha_closed_form()), results)
 
     print("\n-- Elasticity, the fourth component at nu = 1/3 -------------")
-    enc = ElasticityPatternEncoding(m=2, nu=1 / 3, bc="free")
+    enc = ElasticityEncoding(m=2, nu=1 / 3, bc="free")
     _check_eq("iY vanishes", "iY" in enc.components, False, results)
     _check_eq("L drops to 93", enc.num_terms, 93, results)
 
     print("\n-- Elasticity, no flag qubit -------------------------------")
-    enc = ElasticityPatternEncoding(m=3, nu=0.3, bc="essential")
+    enc = ElasticityEncoding(m=3, nu=0.3, bc="essential")
     _check_eq("ancilla == ceil(log2 L)", enc.num_ancilla,
               math.ceil(math.log2(enc.num_terms)), results)
     _check_eq("total qubits == 2m+7", enc.num_qubits, 2 * 3 + 7, results)

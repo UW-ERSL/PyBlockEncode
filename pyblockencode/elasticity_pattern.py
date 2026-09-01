@@ -114,7 +114,7 @@ def q4_assemble(N: int, nu: float, E: float = 1.0, h: float = 1.0,
     return K
 
 
-class ElasticityPatternEncoding:
+class ElasticityEncoding:
     """
     Shift-decomposition block encoding of the 2D plane-stress Q4 stiffness.
 
@@ -133,7 +133,7 @@ class ElasticityPatternEncoding:
 
     Attributes
     ----------
-    lcu_terms()  dict {(Vx, Vy, sigma): coefficient}
+    lcu_terms()  dict {(U_x, U_y, sigma): coefficient}
     components   the Pauli components actually present
     alpha        subnormalization, constant in N
     num_system   2m + 1
@@ -167,7 +167,7 @@ class ElasticityPatternEncoding:
     # ------------------------------------------------------------------
 
     def lcu_terms(self) -> Dict[Tuple[str, str, str], float]:
-        """LCU dictionary {(Vx, Vy, sigma): coefficient}."""
+        """LCU dictionary {(U_x, U_y, sigma): coefficient}."""
         if self._terms is not None:
             return self._terms
         C, nu = self.C, self.nu
@@ -263,7 +263,8 @@ class ElasticityPatternEncoding:
                           or (j == N - 1 and self.bc[1] != "periodic"
                               and self.bc[1][1] == "clamped"))]
         return np.array([2 * (a * N + b) + d
-                         for a in keep_x for b in keep_y for d in (0, 1)])
+                         for a in keep_x for b in keep_y for d in (0, 1)],
+                        dtype=int)
 
     def reference(self) -> np.ndarray:
         """Direct Q4 assembly on the mesh this boundary treatment implies."""
@@ -343,11 +344,15 @@ class ElasticityPatternEncoding:
                 np.linalg.norm(recon - target) / nrm),
         }
 
+        # On the smallest grid every node can be constrained, leaving no
+        # free degrees of freedom and nothing to compare.
         idx = self.free_indices()
-        ii = np.ix_(idx, idx)
-        ref = self.reference()
-        out["vs_q4_assembly"] = float(
-            np.linalg.norm(target[ii] - ref[ii]) / np.linalg.norm(ref[ii]))
+        if idx.size:
+            ii = np.ix_(idx, idx)
+            ref = self.reference()
+            out["vs_q4_assembly"] = float(
+                np.linalg.norm(target[ii] - ref[ii])
+                / np.linalg.norm(ref[ii]))
 
         if self.num_qubits <= 12:
             U = self.block_encoding()
@@ -356,3 +361,7 @@ class ElasticityPatternEncoding:
             out["unitarity_err"] = float(
                 np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
         return out
+
+#: Deprecated name kept for the published API; "pattern compression" was
+#: renamed "shift decomposition" and the class name followed.
+ElasticityPatternEncoding = ElasticityEncoding
