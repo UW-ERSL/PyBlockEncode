@@ -167,7 +167,7 @@ def table_lcu(nu: float = 0.3) -> None:
 \renewcommand{{\arraystretch}}{{1.45}}
 \caption{{The {len(terms)} LCU terms of the plane-stress $Q_4$ elasticity
 operator at $E = 1$, grouped by coefficient.  $S \equiv \Sc$,
-$S^\dagger \equiv \Scd$, and the shift pair $(V_x, V_y)$ names the stencil
+$S^\dagger \equiv \Scd$, and the shift pair $(U^{{(x)}}_p, U^{{(y)}}_q)$ names the stencil
 offset.  {len(terms)} terms carry only {len(order)-2} distinct magnitudes: the
 $I$ component takes one value at the centre and a single common value on all
 eight neighbours, because $a^K_p b^M_q + b^M_p a^K_q = -\tfrac13$ for every
@@ -178,7 +178,7 @@ $\alpha(\nu)$ in~\eqref{{eq:alpha}}.}}
 \label{{tab:lcu}}
 \begin{{tabular}}{{@{{}}llccr@{{}}}}
 \toprule
-$\sigma_{{\mathrm{{dof}}}}$ & stencil offsets $(V_x,V_y)$ & \# &
+$\sigma_r$ & stencil offsets $(U^{{(x)}}_p, U^{{(y)}}_q)$ & \# &
   coefficient & $\nu={nu}$ \\
 \midrule
 {chr(10).join(rows)}
