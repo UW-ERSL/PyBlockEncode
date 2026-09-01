@@ -1,171 +1,207 @@
 """
-elasticity_pattern.py — Exact pattern-compression block encoding of the
-2D plane-stress Q4 finite element stiffness operator, including full shear.
+elasticity_pattern.py — Shift-decomposition block encoding of the 2D
+plane-stress Q4 finite element stiffness operator, including full shear.
 
-This supersedes the preliminary axial-only version.  The encoding is exact
-to machine precision for all Poisson ratios and all grid sizes.
+The 2x2 displacement-block structure is absorbed into a single DOF qubit
+d in {0 = x, 1 = y}.  Writing the four blocks in the Pauli basis of that
+qubit, with Exy = (X + iY)/2 and Eyx = (X - iY)/2,
 
-Mathematical background
------------------------
-With  C = E/(1−ν²)  and the 1D interior operators
+    K = (Kxx+Kyy)/2 kron I  +  (Kxx-Kyy)/2 kron Z
+      + (Kxy+Kyx)/2 kron X  +  (Kxy-Kyx)/2 kron iY
 
-    K1 = tridiag(−1, 2, −1)           (stiffness / FDM Laplacian)
-    M1 = tridiag( 1, 4,  1) / 6       (consistent mass)
-    G1 = tridiag(−1, 0,  1) / 2       (antisymmetric gradient coupling)
+gives four **Pauli components**.  With C = E/(1-nu^2) and the 1D factors
+K, M, G of ``bc.py`` carried in each direction's slot,
 
-the Q4 global stiffness has the 2×2 displacement-DOF block form
+    I  :  C(3-nu)/4  ( K_x kron M_y  +  M_x kron K_y )
+    Z  :  C(1+nu)/4  ( K_x kron M_y  -  M_x kron K_y )
+    X  :  C(1+nu)/4  ( G_x kron G_y^T  +  G_x^T kron G_y )
+    iY :  C(1-3nu)/4 ( G_x kron G_y^T  -  G_x^T kron G_y )
 
-    Kxx = C ( K1⊗M1 + (1−ν)/2 · M1⊗K1 )
-    Kyy = C ( (1−ν)/2 · K1⊗M1 + M1⊗K1 )
-    Kxy = Kyx = −C(1+ν)/2 · G1⊗G1
+Why a fourth component
+----------------------
+On a periodic grid G is antisymmetric, G^T = -G, so the two Kronecker
+products in the shear block collapse onto one, Kxy comes out symmetric, and
+the iY coefficient vanishes identically -- three components suffice.  The
+same holds for clamped conditions, whose corrections do not touch G's
+antisymmetry.
 
-Rewriting with the displacement qubit d ∈ {0=x, 1=y}
+A traction-free correction is diagonal and destroys that antisymmetry.  Kxy
+is then no longer symmetric, X alone cannot carry it, and iY appears.  One
+free direction is enough: a domain clamped on two opposite edges and free on
+the other two already needs four components.
 
-    K = [(Kxx+Kyy)/2] ⊗ I  +  [(Kxx−Kyy)/2] ⊗ Z  +  Kxy ⊗ X
+iY = [[0, 1], [-1, 0]] is real, unitary, and renders its term Hermitian, so
+it is a legitimate member of a real LCU.
 
-gives three DOF channels (I / Z / X), each a sum of tensor products of
-cyclic-shift operators over the x- and y-grid registers.
+The value nu = 1/3
+------------------
+The iY coefficient carries (1-3nu)/4, which vanishes at nu = 1/3.  There the
+traction-free shear block is symmetric again and the term count drops from
+109 to 93.  This is where the transverse coupling nu and the shear term
+(1-nu)/2 are equal.
 
-Substituting the cyclic-shift expansions of K1, M1, G1 yields a 17-term LCU
+Term counts (m-independent)
+---------------------------
+    periodic                        17   {I, Z, X}
+    all edges clamped               49   {I, Z, X}
+    clamped left and right          75   {I, Z, X, iY}
+    clamped left only               98   {I, Z, X, iY}
+    traction-free                  109   {I, Z, X, iY}   (93 at nu = 1/3)
 
-    K = Σ_{(p,q,r)} c_{pqr}  S_p^(x) ⊗ S_q^(y) ⊗ σ_r^(dof)
+Boundary conditions are imposed by reflections adjoined to the unitary set
+(see ``bc.py``); there is no flag qubit in this construction.
 
-where  S_p, S_q ∈ {I, Sc, Sc†}  and  σ_r ∈ {I, Z, X}.
-
-The 17 terms and subnormalization α = Σ|c_{pqr}| depend only on ν, not N.
-
-Resource summary
-----------------
-System qubits   : 2m + 1  (m x-qubits + m y-qubits + 1 DOF qubit)
-PREP ancilla    : ⌈log₂ 17⌉ = 5  qubits
-Flag ancilla    : 1  qubit  (Dirichlet boundary correction)
-Total qubits    : 2m + 7
-
-α  (ν=0.00) = 5.500  (E=1)
-α  (ν=0.30) = 6.099
-α  (ν=0.45) = 6.991
-α / ‖K‖   ≈ 1.6   for all tested ν and m
-
-Convention: system register on least-significant qubits; the encoded block
-is  alpha · U[:N0, :N0]  with  N0 = 2·N²  (N = 2**m interior nodes/dim).
+Convention: system register least significant, DOF qubit innermost, so the
+linear index is (jx * N + jy) * 2 + d and the encoded block is
+alpha * U[:N0, :N0] with N0 = 2 N^2.
 """
 from __future__ import annotations
 
 import math
-import numpy as np
 from typing import Dict, Tuple
 
+import numpy as np
+
+from . import bc as _bc
 from . import operators
 
-# ---------------------------------------------------------------------------
-# 1-D cyclic-shift dictionaries  {label: coefficient}
-# ---------------------------------------------------------------------------
-
-_K1 = {"I": 2.0,        "Sc": -1.0,      "Scd": -1.0}
-_M1 = {"I": 4.0 / 6.0, "Sc":  1.0 / 6.0, "Scd":  1.0 / 6.0}
-_G1 = {                  "Sc": -0.5,       "Scd":  0.5}
-
-
-def _kron(a: Dict, b: Dict) -> Dict:
-    out: Dict = {}
-    for la, ca in a.items():
-        for lb, cb in b.items():
-            key = (la, lb)
-            out[key] = out.get(key, 0.0) + ca * cb
-    return out
+#: the DOF-qubit operators
+PAULI: Dict[str, np.ndarray] = {
+    "I": np.eye(2),
+    "Z": np.diag([1.0, -1.0]),
+    "X": np.array([[0.0, 1.0], [1.0, 0.0]]),
+    "iY": np.array([[0.0, 1.0], [-1.0, 0.0]]),
+}
 
 
-def _scale(d: Dict, s: float) -> Dict:
-    return {k: v * s for k, v in d.items()}
+def q4_assemble(N: int, nu: float, E: float = 1.0, h: float = 1.0,
+                periodic: Tuple[bool, bool] = (False, False)) -> np.ndarray:
+    """
+    Direct plane-stress Q4 assembly by 2x2 Gauss quadrature.
 
+    DOF ordering (jx * N + jy) * 2 + d, matching the encoding convention.
+    ``periodic`` selects wrap-around per direction; an open mesh in a
+    direction uses N-1 elements there.
+    """
+    D = E / (1 - nu ** 2) * np.array([[1, nu, 0], [nu, 1, 0],
+                                      [0, 0, (1 - nu) / 2]])
+    g = 1 / np.sqrt(3)
+    Ke = np.zeros((8, 8))
+    for xi, eta in [(-g, -g), (g, -g), (g, g), (-g, g)]:
+        dN = np.array([[-(1 - eta), (1 - eta), (1 + eta), -(1 + eta)],
+                       [-(1 - xi), -(1 + xi), (1 + xi), (1 - xi)]]) / 4.0
+        J = h / 2.0
+        dNxy = dN / J
+        B = np.zeros((3, 8))
+        for a in range(4):
+            B[0, 2 * a] = dNxy[0, a]
+            B[1, 2 * a + 1] = dNxy[1, a]
+            B[2, 2 * a] = dNxy[1, a]
+            B[2, 2 * a + 1] = dNxy[0, a]
+        Ke += B.T @ D @ B * (J * J)
 
-def _add(a: Dict, b: Dict) -> Dict:
-    out = dict(a)
-    for k, v in b.items():
-        out[k] = out.get(k, 0.0) + v
-    return out
+    K = np.zeros((2 * N * N, 2 * N * N))
+    offs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    nx = N if periodic[0] else N - 1
+    ny = N if periodic[1] else N - 1
+    for ix in range(nx):
+        for iy in range(ny):
+            gd = []
+            for dx, dy in offs:
+                base = 2 * (((ix + dx) % N) * N + ((iy + dy) % N))
+                gd += [base, base + 1]
+            K[np.ix_(gd, gd)] += Ke
+    return K
 
-
-# ---------------------------------------------------------------------------
-# Main class
-# ---------------------------------------------------------------------------
 
 class ElasticityPatternEncoding:
     """
-    Exact pattern-compression block encoding of the 2D plane-stress Q4
-    finite element stiffness matrix.
+    Shift-decomposition block encoding of the 2D plane-stress Q4 stiffness.
 
     Parameters
     ----------
-    m  : int   — qubits per spatial dimension; N = 2**m interior nodes/dim
-    E  : float — Young's modulus (default 1.0)
-    nu : float — Poisson's ratio ∈ [0, 0.5)  (default 0.3)
+    m  : int
+        Qubits per spatial direction; N = 2**m nodes per direction.
+    E  : float
+        Young's modulus.
+    nu : float
+        Poisson's ratio in [0, 0.5).
+    bc : str, pair, sequence or dict
+        Boundary treatment, per direction.  See ``bc.parse_bc``; e.g.
+        ``'essential'``, ``'free'``, ``('clamped', 'free')``, or
+        ``{'x': ('clamped', 'free'), 'y': 'free'}`` for a cantilever.
 
-    Key properties
-    --------------
-    lcu_terms()  — dict {(Vx, Vy, dof): coefficient}  (17 entries)
-    alpha        — subnormalization Σ|c| (constant in N)
-    num_terms    — 17 (always)
-    num_system   — 2m + 1
-    num_ancilla  — 6  (5 PREP + 1 flag)
-    num_qubits   — 2m + 7
-
-    target()      — classically assembled Q4 stiffness (dense, Dirichlet)
-    decomposition()— Kronecker-block reconstruction (classical, any m)
-    block_encoding()— full unitary U (dense, small m only)
-    verify()      — dict with error metrics
+    Attributes
+    ----------
+    lcu_terms()  dict {(Vx, Vy, sigma): coefficient}
+    components   the Pauli components actually present
+    alpha        subnormalization, constant in N
+    num_system   2m + 1
+    num_ancilla  ceil(log2 L)  -- PREP only, no flag qubit
     """
 
-    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3):
-        self.m  = m
-        self.N  = 2 ** m
-        self.E  = E
+    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3,
+                 bc: str = "essential"):
+        self.m = m
+        self.N = 2 ** m
+        self.E = E
         self.nu = nu
-        self.C  = E / (1.0 - nu ** 2)
-        self._terms: Dict | None = None
+        self.C = E / (1.0 - nu ** 2)
+        self.bc = _bc.parse_bc(bc, 2)
+        self._terms: Dict[Tuple[str, str, str], float] | None = None
+
+    # ------------------------------------------------------------------
+    # 1D factors
+    # ------------------------------------------------------------------
+
+    def factors(self) -> Dict[str, Dict[str, float]]:
+        """The six 1D factors, three per direction, under this bc."""
+        return {
+            "Kx": _bc.factor("K", self.bc[0]), "Ky": _bc.factor("K", self.bc[1]),
+            "Mx": _bc.factor("M", self.bc[0]), "My": _bc.factor("M", self.bc[1]),
+            "Gx": _bc.factor("G", self.bc[0]), "Gy": _bc.factor("G", self.bc[1]),
+        }
 
     # ------------------------------------------------------------------
     # LCU decomposition
     # ------------------------------------------------------------------
 
     def lcu_terms(self) -> Dict[Tuple[str, str, str], float]:
-        """
-        Return the 17-term LCU dictionary {(Vx, Vy, dof): coefficient}.
-
-        Vx, Vy ∈ {'I', 'Sc', 'Scd'}  (cyclic shifts on x / y registers)
-        dof    ∈ {'I', 'Z', 'X'}     (Pauli on the DOF qubit)
-        """
+        """LCU dictionary {(Vx, Vy, sigma): coefficient}."""
         if self._terms is not None:
             return self._terms
-
         C, nu = self.C, self.nu
-        KM = _kron(_K1, _M1)
-        MK = _kron(_M1, _K1)
-        GG = _kron(_G1, _G1)
+        f = self.factors()
+        Gxt, Gyt = _bc.transpose(f["Gx"]), _bc.transpose(f["Gy"])
 
-        # Three DOF channels from the DOF-qubit rewriting:
-        #   (Kxx+Kyy)/2 ⊗ I :  coefficient  C*(3-nu)/4 * (KM + MK)
-        #   (Kxx-Kyy)/2 ⊗ Z :  coefficient  C*(1+nu)/4 * (KM - MK)
-        #   Kxy         ⊗ X :  coefficient  -C*(1+nu)/2 * GG
-        chanI = _scale(_add(KM, MK),          C * (3 - nu) / 4.0)
-        chanZ = _scale(_add(KM, _scale(MK, -1)), C * (1 + nu) / 4.0)
-        chanX = _scale(GG,                    -C * (1 + nu) / 2.0)
+        KM = _bc.kron(f["Kx"], f["My"])
+        MK = _bc.kron(f["Mx"], f["Ky"])
+        GGt = _bc.kron(f["Gx"], Gyt)
+        GtG = _bc.kron(Gxt, f["Gy"])
 
+        chan = {
+            "I": _bc.scale(_bc.add(KM, MK), C * (3 - nu) / 4),
+            "Z": _bc.scale(_bc.add(KM, MK, -1.0), C * (1 + nu) / 4),
+            "X": _bc.scale(_bc.add(GGt, GtG), C * (1 + nu) / 4),
+            "iY": _bc.scale(_bc.add(GGt, GtG, -1.0), C * (1 - 3 * nu) / 4),
+        }
         t: Dict[Tuple[str, str, str], float] = {}
-        for (xl, yl), c in chanI.items():
-            k = (xl, yl, "I");  t[k] = t.get(k, 0.0) + c
-        for (xl, yl), c in chanZ.items():
-            k = (xl, yl, "Z");  t[k] = t.get(k, 0.0) + c
-        for (xl, yl), c in chanX.items():
-            k = (xl, yl, "X");  t[k] = t.get(k, 0.0) + c
-
-        self._terms = {k: v for k, v in t.items() if abs(v) > 1e-15}
+        for sigma, d in chan.items():
+            for (xl, yl), c in d.items():
+                key = (xl, yl, sigma)
+                t[key] = t.get(key, 0.0) + c
+        self._terms = {k: v for k, v in t.items() if abs(v) > 1e-13}
         return self._terms
 
     @property
+    def components(self) -> Tuple[str, ...]:
+        """Pauli components actually present, in the order I, Z, X, iY."""
+        present = {k[2] for k in self.lcu_terms()}
+        return tuple(s for s in ("I", "Z", "X", "iY") if s in present)
+
+    @property
     def alpha(self) -> float:
-        """Subnormalization α = Σ|c_{pqr}|, constant in N."""
-        return float(sum(abs(v) for v in self.lcu_terms().values()))
+        return _bc.alpha(self.lcu_terms())
 
     @property
     def num_terms(self) -> int:
@@ -173,191 +209,150 @@ class ElasticityPatternEncoding:
 
     @property
     def num_system(self) -> int:
-        return 2 * self.m + 1   # m x-qubits + m y-qubits + 1 DOF qubit
+        return 2 * self.m + 1          # x-register, y-register, DOF qubit
 
     @property
     def num_ancilla(self) -> int:
-        L = self.num_terms
-        return math.ceil(math.log2(max(L, 2))) + 1   # PREP + flag
+        """PREP qubits only; the reflection construction needs no flag."""
+        return math.ceil(math.log2(max(self.num_terms, 2)))
 
     @property
     def num_qubits(self) -> int:
         return self.num_system + self.num_ancilla
 
+    def alpha_closed_form(self) -> float:
+        """E(33+nu) / (6(1-nu^2)); valid for the periodic and clamped cases."""
+        return self.E * (33 + self.nu) / (6 * (1 - self.nu ** 2))
+
     # ------------------------------------------------------------------
-    # Classical reference (Dirichlet trimmed)
+    # Classical reference
     # ------------------------------------------------------------------
 
     def target(self) -> np.ndarray:
         """
-        Classically assembled Q4 plane-stress stiffness matrix (dense).
-        Shape: (2·N², 2·N²) where N = 2**m.
-        DOF ordering: all x-displacements first, then all y-displacements.
+        The operator this LCU encodes, assembled from the displacement
+        blocks -- an independent path from ``lcu_terms``.
         """
-        return operators.elasticity_q4(self.m, self.m, self.E, self.nu)
+        N, C, nu = self.N, self.C, self.nu
+        f = self.factors()
+        d = {k: _bc.dense(v, N) for k, v in f.items()}
+        KM = np.kron(d["Kx"], d["My"])
+        MK = np.kron(d["Mx"], d["Ky"])
+        Kxx = C * (KM + (1 - nu) / 2 * MK)
+        Kyy = C * ((1 - nu) / 2 * KM + MK)
+        Kxy = C * (nu * np.kron(d["Gx"].T, d["Gy"])
+                   + (1 - nu) / 2 * np.kron(d["Gx"], d["Gy"].T))
+        Exx = np.array([[1.0, 0], [0, 0]])
+        Eyy = np.array([[0.0, 0], [0, 1]])
+        Exy = np.array([[0.0, 1], [0, 0]])
+        Eyx = np.array([[0.0, 0], [1, 0]])
+        return (np.kron(Kxx, Exx) + np.kron(Kyy, Eyy)
+                + np.kron(Kxy, Exy) + np.kron(Kxy.T, Eyx))
 
-    # ------------------------------------------------------------------
-    # Classical Kronecker-block decomposition (for any m)
-    # ------------------------------------------------------------------
-
-    def decomposition(self) -> np.ndarray:
-        """
-        Reconstruct K from the Kronecker decomposition (classical, dense).
-
-        Uses the exact formula with standard (non-cyclic) tridiagonal
-        operators, so the result matches target() to machine precision.
-        """
+    def free_indices(self) -> np.ndarray:
+        """Degrees of freedom that survive the essential constraints."""
         N = self.N
-        C, nu = self.C, self.nu
+        keep_x = [j for j in range(N)
+                  if not ((j == 0 and self.bc[0] != "periodic"
+                           and self.bc[0][0] == "clamped")
+                          or (j == N - 1 and self.bc[0] != "periodic"
+                              and self.bc[0][1] == "clamped"))]
+        keep_y = [j for j in range(N)
+                  if not ((j == 0 and self.bc[1] != "periodic"
+                           and self.bc[1][0] == "clamped")
+                          or (j == N - 1 and self.bc[1] != "periodic"
+                              and self.bc[1][1] == "clamped"))]
+        return np.array([2 * (a * N + b) + d
+                         for a in keep_x for b in keep_y for d in (0, 1)])
 
-        def tri(a, b, c, n=N):
-            M = b * np.eye(n)
-            M += a * np.diag(np.ones(n-1), -1)
-            M += c * np.diag(np.ones(n-1),  1)
-            return M
-
-        K1 = tri(-1,  2, -1)
-        M1 = tri( 1,  4,  1) / 6.0
-        G1 = tri(-1,  0,  1) / 2.0
-
-        Kxx = C * (np.kron(M1, K1) + (1 - nu) / 2.0 * np.kron(K1, M1))
-        Kyy = C * ((1 - nu) / 2.0 * np.kron(M1, K1) + np.kron(K1, M1))
-        Kxy = -C * (1 + nu) / 2.0 * np.kron(G1, G1)
-
-        # DOF-innermost assembly: kron(K_spatial, E_dof)
-        # Matches the block_encoding unitary convention:
-        # index = (jx*N + jy)*2 + d, with d ∈ {0=x, 1=y}
-        Exx = np.array([[1., 0.], [0., 0.]])
-        Eyy = np.array([[0., 0.], [0., 1.]])
-        Exy = np.array([[0., 1.], [0., 0.]])
-        Eyx = np.array([[0., 0.], [1., 0.]])
-        return (np.kron(Kxx, Exx) + np.kron(Kxy, Exy)
-              + np.kron(Kxy.T, Eyx) + np.kron(Kyy, Eyy))
+    def reference(self) -> np.ndarray:
+        """Direct Q4 assembly on the mesh this boundary treatment implies."""
+        per = tuple(e == "periodic" for e in self.bc)
+        return q4_assemble(self.N, self.nu, self.E, periodic=per)
 
     # ------------------------------------------------------------------
-    # Full block-encoding unitary (dense, small m only)
+    # Block encoding
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _cyclic_shift(lbl: str, j: int, N: int) -> Tuple[int, bool]:
-        """Apply one cyclic shift; return (new_j, wrapped)."""
-        if lbl == "I":
-            return j, False
-        if lbl == "Sc":
-            return (j + 1) % N, (j == N - 1)
-        return (j - 1) % N, (j == 0)   # Scd
-
-    @staticmethod
-    def _dof_action(dl: str, d: int) -> Tuple[int, float]:
-        """Apply Pauli to DOF qubit; return (new_d, sign)."""
-        if dl == "I":
-            return d, 1.0
-        if dl == "X":
-            return 1 - d, 1.0
-        # Z
-        return d, (1.0 if d == 0 else -1.0)
 
     def block_encoding(self) -> np.ndarray:
         """
-        Build the full block-encoding unitary (dense, for small m).
+        Full block-encoding unitary (dense; small m only).
 
-        Qubit layout (MSB → LSB):  [PREP ancilla | flag | x-reg | y-reg | dof]
-        System dimension: N0 = 2·N²  (N = 2**m).
-        The encoded block is  alpha · U[:N0, :N0].
-
-        Recommended: m ≤ 3  (total qubits ≤ 13).
+        Layout: PREP ancilla most significant, then x, y and the DOF qubit,
+        so ``alpha * U[:N0, :N0]`` is the operator, N0 = 2 N^2.
         """
-        N = self.N
-        terms  = self.lcu_terms()
-        labels = list(terms)
-        coeffs = np.array([terms[k] for k in labels])
-        alpha  = float(np.sum(np.abs(coeffs)))
-        L      = len(labels)
-        K2     = 2 ** math.ceil(math.log2(max(L, 2)))   # PREP ancilla span
+        terms = self.lcu_terms()
+        keys = list(terms)
+        coeffs = np.array([terms[k] for k in keys])
+        a = float(np.abs(coeffs).sum())
+        L, N = len(keys), self.N
+        K2, N0 = 2 ** self.num_ancilla, 2 * N * N
 
-        # System block = flag(1) × x(N) × y(N) × dof(2)
-        Dflag = 2 * N * N * 2
-
-        def flat(flag, jx, jy, d):
-            return ((flag * N + jx) * N + jy) * 2 + d
-
-        SEL = np.zeros((K2 * Dflag, K2 * Dflag))
-        for i in range(K2):
-            if i < L:
-                xl, yl, dl = labels[i]
-                sgn = float(np.sign(coeffs[i]))
-                for flag in range(2):
-                    for jx in range(N):
-                        for jy in range(N):
-                            for d in range(2):
-                                sjx, wx = self._cyclic_shift(xl, jx, N)
-                                sjy, wy = self._cyclic_shift(yl, jy, N)
-                                sd,  ds = self._dof_action(dl, d)
-                                # Boundary flag: set if any shift wraps
-                                new_flag = (int(wx or wy) if flag == 0
-                                            else 1 - int(wx or wy))
-                                row = i * Dflag + flat(new_flag, sjx, sjy, sd)
-                                col = i * Dflag + flat(flag, jx, jy, d)
-                                SEL[row, col] = sgn * ds
-            else:
-                SEL[i*Dflag:(i+1)*Dflag, i*Dflag:(i+1)*Dflag] = np.eye(Dflag)
-
-        # PREP: load sqrt(|c_k|/alpha) → QR-orthogonalise
         amps = np.zeros(K2)
-        for i, c in enumerate(coeffs):
-            amps[i] = np.sqrt(abs(c) / alpha)
+        amps[:L] = np.sqrt(np.abs(coeffs) / a)
         P = np.eye(K2)
         P[:, 0] = amps
-        Q, _ = np.linalg.qr(P)
-        if np.dot(Q[:, 0], amps) < 0:
-            Q[:, 0] *= -1
+        Q, R = np.linalg.qr(P)
+        Q = Q * np.sign(np.diag(R))
 
-        U = (np.kron(Q.conj().T, np.eye(Dflag))
-             @ SEL
-             @ np.kron(Q, np.eye(Dflag)))
-        return U
+        blocks = []
+        for i in range(K2):
+            if i < L:
+                xl, yl, sl = keys[i]
+                blocks.append(float(np.sign(coeffs[i])) * np.kron(
+                    _bc.unitary(xl, N),
+                    np.kron(_bc.unitary(yl, N), PAULI[sl])))
+            else:
+                blocks.append(None)
+
+        out = np.zeros((K2 * N0, K2 * N0))
+        for ai in range(K2):
+            for bi in range(K2):
+                acc = np.zeros((N0, N0))
+                for i in range(K2):
+                    w = Q[i, ai] * Q[i, bi]
+                    if abs(w) < 1e-15:
+                        continue
+                    if blocks[i] is None:
+                        acc[np.diag_indices(N0)] += w
+                    else:
+                        acc += w * blocks[i]
+                out[ai * N0:(ai + 1) * N0, bi * N0:(bi + 1) * N0] = acc
+        return out
 
     # ------------------------------------------------------------------
     # Verification
     # ------------------------------------------------------------------
 
-    def verify(self, build_unitary: bool | None = None) -> dict:
+    def verify(self) -> dict:
         """
-        Verify the encoding at two levels.
-
-        Level 1 (always):   ‖decomposition() − target()‖ / ‖target()‖
-        Level 2 (if small): ‖alpha · U[:N0,:N0] − target()‖ / ‖target()‖
-                             ‖U†U − I‖
-
-        Returns
-        -------
-        dict with keys:
-            nu, E, m, alpha, num_terms, num_qubits
-            decomposition_rel_err
-            block_encoding_rel_err   (if unitary built)
-            unitarity_err            (if unitary built)
+        Three independent checks:
+        the LCU against the block formula, the block formula against a direct
+        Q4 assembly on the free degrees of freedom, and the unitary.
         """
+        N0 = 2 * self.N ** 2
         target = self.target()
-        dec    = self.decomposition()
-        dec_err = float(np.linalg.norm(dec - target) / np.linalg.norm(target))
+        nrm = np.linalg.norm(target)
 
+        recon = _bc.dense_nd(self.lcu_terms(), self.N, extra=PAULI)
         out = {
-            "nu": self.nu, "E": self.E, "m": self.m,
+            "m": self.m, "nu": self.nu, "E": self.E, "bc": self.bc,
             "alpha": self.alpha, "num_terms": self.num_terms,
-            "num_qubits": self.num_qubits,
-            "decomposition_rel_err": dec_err,
+            "components": self.components, "num_qubits": self.num_qubits,
+            "decomposition_rel_err": float(
+                np.linalg.norm(recon - target) / nrm),
         }
 
-        if build_unitary is None:
-            build_unitary = self.num_qubits <= 13
+        idx = self.free_indices()
+        ii = np.ix_(idx, idx)
+        ref = self.reference()
+        out["vs_q4_assembly"] = float(
+            np.linalg.norm(target[ii] - ref[ii]) / np.linalg.norm(ref[ii]))
 
-        if build_unitary:
-            N0 = 2 * self.N ** 2
-            U  = self.block_encoding()
-            block = self.alpha * U[:N0, :N0]
-            be_err = float(np.linalg.norm(block - target) / np.linalg.norm(target))
-            uu_err = float(np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
-            out["block_encoding_rel_err"] = be_err
-            out["unitarity_err"]          = uu_err
-
+        if self.num_qubits <= 12:
+            U = self.block_encoding()
+            out["block_encoding_rel_err"] = float(
+                np.linalg.norm(self.alpha * U[:N0, :N0] - target) / nrm)
+            out["unitarity_err"] = float(
+                np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
         return out

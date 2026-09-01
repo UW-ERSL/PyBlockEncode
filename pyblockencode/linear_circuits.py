@@ -15,7 +15,7 @@ Why this exists
 The cyclic shift S_c is the only part of the encoding whose cost grows with
 m, so it alone sets the complexity of the whole block encoding.  Implementing
 it as a ladder of multi-controlled X gates with 0..m-1 controls -- the
-construction in qiskit_encoding._shift_gate, and the one in the reference
+construction in qiskit_encoding._shift_circ, and the one in the reference
 implementation of Kharazi et al. (arXiv:2407.18347) -- costs O(m^3) Toffolis
 once Qiskit synthesizes each MCX ancilla-free, or O(m^2) with dirty ancillas.
 Both papers nonetheless quote O(m), citing Gidney's borrowed-ancilla
@@ -50,8 +50,11 @@ not need controlling.  The sign of c_i is a Z on ctrl.
 Qubit layout (system on the least significant qubits, so the encoded block is
 the contiguous corner alpha * U[:N0, :N0]):
 
-    Poisson     : [d0 .. d_{dim-1}] [flag x dim] [ctrl] [prefix x (m-1)] [prep]
-    Elasticity  : [dof] [y] [x]     [flag x 2]   [ctrl] [prefix x (m-1)] [prep]
+    Poisson     : [d_{dim-1} .. d0] [ctrl] [prefix x (m-1)] [prep]
+    Elasticity  : [dof] [y] [x]     [ctrl] [prefix x (m-1)] [prep]
+
+Boundary conditions use the reflection construction of bc.py, so there is
+no flag register; a reflection reuses the same prefix ancillas as a shift.
 """
 from __future__ import annotations
 
@@ -71,50 +74,97 @@ from .elasticity_pattern import ElasticityPatternEncoding
 # the primitive: controlled cyclic shift, with wrap flag, in O(m) Toffolis
 # ---------------------------------------------------------------------------
 
-def _shift_with_flag(qc: QuantumCircuit, lbl: str, x, p, flag, ctrl) -> None:
-    """Append  ctrl-controlled  S_c^{+-1}  on register x, flagging wraps.
+def _ladder_up(qc, x, pf) -> None:
+    """Compute pf[k] = AND(x[0..k]) into the clean prefix ancillas."""
+    m = len(x)
+    for k in range(1, m - 1):
+        qc.ccx(pf[k - 1], x[k], pf[k])
+
+
+def _ladder_down(qc, x, pf) -> None:
+    for k in range(m_of(x) - 2, 0, -1):
+        qc.ccx(pf[k - 1], x[k], pf[k])
+
+
+def m_of(x) -> int:
+    return len(x)
+
+
+def _prefix(x, p):
+    """pf[k] holds AND(x[0..k]); pf[0] is x[0] itself, costing no ancilla."""
+    m = len(x)
+    return [x[0]] + [p[k - 1] for k in range(1, m)]
+
+
+def _shift_ctrl(qc: QuantumCircuit, lbl: str, x, p, ctrl) -> None:
+    """Append ctrl-controlled S_c^{+-1} on register x in O(m) Toffolis.
 
     x    : list of m qubits, x[0] the LSB
     p    : list of >= m-1 clean ancillas (restored to |0>)
-    flag : qubit XORed with the wrap predicate (conditioned on ctrl)
     ctrl : single control qubit
-
-    Cost: 3m - 2 Toffolis.  No-op for lbl == 'I'.
     """
     if lbl == 'I':
         return
     m = len(x)
-    dec = (lbl == 'Scd')
-
+    dec = lbl.endswith('Scd')
     if dec:                       # decrement = X-conjugated increment
         for q in x:
             qc.x(q)
-
     if m == 1:
-        qc.ccx(ctrl, x[0], flag)  # wraps iff the single bit is 1
         qc.cx(ctrl, x[0])
     else:
-        # p_full[k] holds AND(x[0..k]); p_full[0] is x[0] itself, no ancilla
-        pf = [x[0]] + [p[k - 1] for k in range(1, m)]
-
-        for k in range(1, m - 1):             # ladder up
-            qc.ccx(pf[k - 1], x[k], pf[k])
-
-        qc.ccx(pf[m - 2], x[m - 1], pf[m - 1])  # AND of all m bits = wrap
-        qc.ccx(ctrl, pf[m - 1], flag)           # flag ^= ctrl & wrap
-        qc.ccx(pf[m - 2], x[m - 1], pf[m - 1])  # uncompute (x[m-1] still clean)
-
+        pf = _prefix(x, p)
+        _ladder_up(qc, x, pf)
         qc.ccx(ctrl, pf[m - 2], x[m - 1])       # flip the top bit
-
         for k in range(m - 2, 0, -1):           # unwind, flipping on the way
             qc.ccx(pf[k - 1], x[k], pf[k])
             qc.ccx(ctrl, pf[k - 1], x[k])
-
         qc.cx(ctrl, x[0])
-
     if dec:
         for q in x:
             qc.x(q)
+
+
+def _reflection_ctrl(qc: QuantumCircuit, which: str, x, p, ctrl) -> None:
+    """Append ctrl-controlled R_j = I - 2|j><j| in O(m) Toffolis.
+
+    R_{N-1} places a phase -1 on |11..1>; R_0 is the same conjugated by X on
+    every qubit.  The full AND is computed into the same clean prefix
+    ancillas the shift uses, so a reflection costs no extra register.
+    """
+    m = len(x)
+    flip = (which == 'R0')
+    if flip:
+        for q in x:
+            qc.x(q)
+    if m == 1:
+        qc.cz(ctrl, x[0])
+    else:
+        pf = _prefix(x, p)
+        _ladder_up(qc, x, pf)
+        qc.ccx(pf[m - 2], x[m - 1], pf[m - 1])   # AND of all m bits
+        qc.cz(ctrl, pf[m - 1])
+        qc.ccx(pf[m - 2], x[m - 1], pf[m - 1])   # uncompute
+        for k in range(m - 2, 0, -1):            # unwind the ladder
+            qc.ccx(pf[k - 1], x[k], pf[k])
+    if flip:
+        for q in x:
+            qc.x(q)
+
+
+def _label_ctrl(qc: QuantumCircuit, lbl: str, x, p, ctrl) -> None:
+    """Controlled application of one label of the unitary set of ``bc.py``.
+
+    'R0.Sc' denotes the matrix product R0 @ Sc, so the shift goes first.
+    """
+    if lbl == 'I':
+        return
+    if lbl in ('R0', 'RN'):
+        _reflection_ctrl(qc, lbl, x, p, ctrl)
+        return
+    _shift_ctrl(qc, lbl, x, p, ctrl)
+    if '.' in lbl:
+        _reflection_ctrl(qc, lbl.split('.')[0], x, p, ctrl)
 
 
 def _set_ctrl(qc: QuantumCircuit, anc, ctrl, i: int) -> None:
@@ -149,11 +199,12 @@ class LinearPoissonCircuit:
     (N = 2**m interior nodes), dim in {1,2,3}, disc in {'fdm','fem'}.
     """
 
-    def __init__(self, m: int, dim: int = 1, disc: str = 'fdm'):
+    def __init__(self, m: int, dim: int = 1, disc: str = 'fdm',
+                 bc: str = 'essential'):
         self.m = m
         self.dim = dim
         self.disc = disc
-        self.enc = PoissonPatternEncoding(m=m, dim=dim, disc=disc)
+        self.enc = PoissonPatternEncoding(m=m, dim=dim, disc=disc, bc=bc)
 
     @property
     def alpha(self) -> float:
@@ -170,7 +221,7 @@ class LinearPoissonCircuit:
     @property
     def num_ancilla(self) -> int:
         na_prep = int(math.ceil(math.log2(max(self.num_terms, 2))))
-        return na_prep + self.dim + 1 + max(self.m - 1, 0)
+        return na_prep + 1 + max(self.m - 1, 0)      # prep + ctrl + prefix
 
     @property
     def num_qubits(self) -> int:
@@ -188,12 +239,12 @@ class LinearPoissonCircuit:
         npre = max(m - 1, 0)
 
         qr_dims = [QuantumRegister(m, f'd{i}') for i in range(dim)]
-        qr_flag = QuantumRegister(dim, 'flag')
         qr_ctrl = QuantumRegister(1, 'ctrl')
         qr_pre = QuantumRegister(npre, 'pre') if npre else None
         qr_anc = QuantumRegister(na_prep, 'anc')
 
-        regs = qr_dims + [qr_flag, qr_ctrl]
+        # direction 0 is most significant in target(), so declare it last
+        regs = list(reversed(qr_dims)) + [qr_ctrl]
         if qr_pre is not None:
             regs.append(qr_pre)
         regs.append(qr_anc)
@@ -209,8 +260,7 @@ class LinearPoissonCircuit:
             if coeffs[i] < 0:
                 qc.z(ctrl)
             for d, lbl in enumerate(key):
-                _shift_with_flag(qc, lbl, list(qr_dims[d]), pre,
-                                 qr_flag[d], ctrl)
+                _label_ctrl(qc, lbl, list(qr_dims[d]), pre, ctrl)
             _set_ctrl(qc, qr_anc, ctrl, i)
 
         qc.append(prep.inverse(), qr_anc)
@@ -242,11 +292,12 @@ class LinearPoissonCircuit:
 class LinearElasticityCircuit:
     """O(m)-Toffoli block encoding of the 2D plane-stress Q4 stiffness."""
 
-    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3):
+    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3,
+                 bc: str = 'essential'):
         self.m = m
         self.E = E
         self.nu = nu
-        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu)
+        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu, bc=bc)
 
     @property
     def alpha(self) -> float:
@@ -263,7 +314,7 @@ class LinearElasticityCircuit:
     @property
     def num_ancilla(self) -> int:
         na_prep = int(math.ceil(math.log2(max(self.num_terms, 2))))
-        return na_prep + 2 + 1 + max(self.m - 1, 0)
+        return na_prep + 1 + max(self.m - 1, 0)      # prep + ctrl + prefix
 
     @property
     def num_qubits(self) -> int:
@@ -285,12 +336,11 @@ class LinearElasticityCircuit:
         qr_dof = QuantumRegister(1, 'dof')
         qr_y = QuantumRegister(m, 'y')
         qr_x = QuantumRegister(m, 'x')
-        qr_flag = QuantumRegister(2, 'flag')
         qr_ctrl = QuantumRegister(1, 'ctrl')
         qr_pre = QuantumRegister(npre, 'pre') if npre else None
         qr_anc = QuantumRegister(na_prep, 'anc')
 
-        regs = [qr_dof, qr_y, qr_x, qr_flag, qr_ctrl]
+        regs = [qr_dof, qr_y, qr_x, qr_ctrl]
         if qr_pre is not None:
             regs.append(qr_pre)
         regs.append(qr_anc)
@@ -305,11 +355,14 @@ class LinearElasticityCircuit:
             _set_ctrl(qc, qr_anc, ctrl, i)
             if coeffs[i] < 0:
                 qc.z(ctrl)
-            _shift_with_flag(qc, xl, list(qr_x), pre, qr_flag[0], ctrl)
-            _shift_with_flag(qc, yl, list(qr_y), pre, qr_flag[1], ctrl)
+            _label_ctrl(qc, xl, list(qr_x), pre, ctrl)
+            _label_ctrl(qc, yl, list(qr_y), pre, ctrl)
             if dl == 'X':
                 qc.cx(ctrl, qr_dof[0])
             elif dl == 'Z':
+                qc.cz(ctrl, qr_dof[0])
+            elif dl == 'iY':                 # iY = Z @ X : apply X then Z
+                qc.cx(ctrl, qr_dof[0])
                 qc.cz(ctrl, qr_dof[0])
             _set_ctrl(qc, qr_anc, ctrl, i)
 

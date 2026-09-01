@@ -51,62 +51,59 @@ def _prep_gate(amps: np.ndarray, label: str = 'Prep') -> StatePreparation:
     return StatePreparation(amps, label=label)
 
 
-def _shift_gate(lbl: str, m: int) -> QuantumCircuit:
-    """
-    Return a small QuantumCircuit implementing one cyclic shift on m qubits.
-
-    'I'   → identity (no gates)
-    'Sc'  → cyclic increment  |j⟩ → |(j+1) mod 2^m⟩
-    'Scd' → cyclic decrement  |j⟩ → |(j-1) mod 2^m⟩
-
-    Implemented as a multi-controlled incrementer / decrementer using the
-    standard X-ladder construction (Vedral et al. style):
-      q0 (MSB) ... q_{m-1} (LSB)
-      CNOT q_{m-2} → q_{m-1}
-      CNOT q_{m-3} → q_{m-2} (controlled on q_{m-2} being |0⟩ after prev step)
-      ... cascading upward
-    For simplicity we use the QFT-adder approach via Qiskit's add_to_int,
-    but to keep the circuit self-contained we build it from X + MCX gates.
-    """
-    qc = QuantumCircuit(m, name=lbl)
-    if lbl == 'I':
-        return qc
-    # Qiskit convention: qubit 0 is the LSB of the integer index.
-    # Increment: apply the high-order carries FIRST, LSB flip LAST.
-    if lbl == 'Sc':
-        for k in range(m - 1, 0, -1):
-            qc.mcx(list(range(k)), k)
+def _shift_circ(m: int, k: int) -> QuantumCircuit:
+    """Cyclic increment (k=+1) or decrement (k=-1) on an m-qubit register."""
+    qc = QuantumCircuit(m)
+    if k == +1:
+        for j in range(m - 1, 0, -1):
+            qc.mcx(list(range(j)), j)
         qc.x(0)
-    else:  # Scd = inverse of Sc (reverse order; all gates are self-inverse)
+    else:
         qc.x(0)
-        for k in range(1, m):
-            qc.mcx(list(range(k)), k)
+        for j in range(1, m):
+            qc.mcx(list(range(j)), j)
     return qc
 
 
-def _flag_correction(m: int, lbl: str) -> QuantumCircuit:
+def _reflection_circ(m: int, which: str) -> QuantumCircuit:
     """
-    Return a circuit that sets a flag qubit when the shift wraps around.
+    R_j = I - 2|j><j| on an m-qubit register.
 
-    For Sc  (increment): flag ← 1  iff  j = 2^m − 1  (all |1⟩ before shift)
-    For Scd (decrement): flag ← 1  iff  j = 0         (all |0⟩ before shift)
-    Flag qubit is the last qubit; the first m qubits are the shift register.
-
-    Layout: qc has m+1 qubits — [shift_reg(0..m-1), flag(m)]
+    R_{N-1} is a multi-controlled Z (phase -1 on |11...1>); R_0 is the same
+    conjugated by X on every qubit.  Both are O(m) and use no ancilla.
     """
-    qc = QuantumCircuit(m + 1, name=f'flag_{lbl}')
-    if lbl == 'I':
+    qc = QuantumCircuit(m)
+    flip = (which == "R0")
+    if flip:
+        qc.x(range(m))
+    if m == 1:
+        qc.z(0)
+    else:
+        qc.mcp(np.pi, list(range(m - 1)), m - 1)
+    if flip:
+        qc.x(range(m))
+    return qc
+
+
+def _label_gate(lbl: str, m: int) -> QuantumCircuit:
+    """
+    Circuit for one label of the unitary set of ``bc.py``:
+
+        I, Sc, R0.Sc, Scd, RN.Scd, R0, RN
+
+    A composite label such as 'R0.Sc' denotes the matrix product R0 @ Sc, so
+    the shift is applied first and the reflection second.
+    """
+    qc = QuantumCircuit(m, name=lbl)
+    if lbl == "I":
         return qc
-    if lbl == 'Sc':
-        # Flag ← 1 when all m shift bits are |1⟩
-        qc.mcx(list(range(m)), m)
-    else:  # Scd
-        # Flag ← 1 when all m shift bits are |0⟩  (flip→control→flip)
-        for j in range(m):
-            qc.x(j)
-        qc.mcx(list(range(m)), m)
-        for j in range(m):
-            qc.x(j)
+    if lbl in ("R0", "RN"):
+        qc.compose(_reflection_circ(m, lbl), inplace=True)
+        return qc
+    shift_part = "Sc" if lbl.endswith("Sc") else "Scd"
+    qc.compose(_shift_circ(m, +1 if shift_part == "Sc" else -1), inplace=True)
+    if "." in lbl:
+        qc.compose(_reflection_circ(m, lbl.split(".")[0]), inplace=True)
     return qc
 
 
@@ -221,344 +218,197 @@ class PauliBlockEncoding:
 
 class PoissonCircuit:
     """
-    Qiskit block-encoding circuit for the Poisson stiffness operator via
-    pattern compression (cyclic-shift LCU + flag ancilla).
+    Qiskit block-encoding circuit for the Poisson operator, via shift
+    decomposition with reflection-based boundary conditions.
+
+    There is no flag qubit: the ancilla register is PREP only.
 
     Parameters
     ----------
-    m    : int  — qubits per spatial dimension; N = 2**m interior nodes
-    dim  : int  — spatial dimension (1, 2, or 3)
-    disc : str  — 'fdm' or 'fem'
+    m, dim, disc, bc : as for ``PoissonPatternEncoding``.
     """
 
-    def __init__(self, m: int, dim: int = 1, disc: str = 'fdm'):
-        self.enc  = PoissonPatternEncoding(m=m, dim=dim, disc=disc)
-        self.m    = m
-        self.dim  = dim
-        self.disc = disc
+    def __init__(self, m: int, dim: int = 1, disc: str = 'fdm',
+                 bc: str = 'essential'):
+        self.enc = PoissonPatternEncoding(m=m, dim=dim, disc=disc, bc=bc)
+        self.m, self.dim, self.disc = m, dim, disc
 
-    @property
-    def alpha(self) -> float:
-        return self.enc.alpha
-
-    @property
-    def num_terms(self) -> int:
-        return self.enc.num_terms
-
-    @property
-    def num_system(self) -> int:
-        return self.enc.num_system   # dim * m
-
-    @property
-    def num_ancilla(self) -> int:
-        # ceil(log2 L) PREP + one wrap flag per spatial dimension
-        return self.enc.num_ancilla - 1 + self.dim
-
-    @property
-    def num_qubits(self) -> int:
-        return self.enc.num_qubits
+    alpha = property(lambda self: self.enc.alpha)
+    num_terms = property(lambda self: self.enc.num_terms)
+    num_system = property(lambda self: self.enc.num_system)
+    num_ancilla = property(lambda self: self.enc.num_ancilla)
+    num_qubits = property(lambda self: self.enc.num_qubits)
 
     def target(self) -> np.ndarray:
         return self.enc.target()
 
     def circuit(self) -> QuantumCircuit:
         """
-        Return the pattern-compression LCU circuit (no measurements).
+        PREP - SELECT - PREP^dagger, no measurements.
 
-        Qubit layout:
-            qr_sys  = d*m system qubits  (d spatial registers of m qubits each)
-            qr_flag = 1 flag qubit       (Dirichlet boundary correction)
-            qr_anc  = ceil(log2 L) PREP ancilla qubits
-
-        Declaration order: QuantumCircuit(qr_sys, qr_flag, qr_anc)
-        → system = LSB, ancilla (PREP+flag) = MSB
-        → encoded block is U[:N0, :N0]  where N0 = 2**(dim*m)
+        Qubit layout: one m-qubit register per spatial direction (declared
+        last-direction-first so the linear index is (j_0 * N + j_1) * ...),
+        then the PREP ancilla.  System registers are declared first, so the
+        encoded block is the contiguous ``U[:N0, :N0]``.
         """
-        m   = self.m
-        dim = self.dim
-        N0  = 2 ** (dim * m)
-        terms   = self.enc.lcu_terms()
-        labels  = list(terms)
-        coeffs  = np.array([terms[k] for k in labels])
-        alpha   = float(np.sum(np.abs(coeffs)))
-        L       = len(labels)
-        na_prep = int(np.ceil(np.log2(max(L, 2))))
-        K2      = 2 ** na_prep
+        m, dim = self.m, self.dim
+        terms = self.enc.lcu_terms()
+        keys = list(terms)
+        coeffs = np.array([terms[k] for k in keys])
+        alpha = float(np.abs(coeffs).sum())
+        L = len(keys)
+        na = self.enc.num_ancilla
 
-        # Registers: one m-qubit register per spatial dimension
         qr_dims = [QuantumRegister(m, f'd{i}') for i in range(dim)]
-        qr_flag = QuantumRegister(dim, 'flag')   # one wrap flag per dimension
-        qr_anc  = QuantumRegister(na_prep, 'anc')
+        qr_anc = QuantumRegister(na, 'anc')
+        # declare the last direction first so direction 0 is most significant
+        qc = QuantumCircuit(*reversed(qr_dims), qr_anc,
+                            name=f'Poisson{dim}D_{self.disc.upper()}')
 
-        # MSB ancilla: system registers first, then flag, then PREP ancilla
-        all_regs = qr_dims + [qr_flag, qr_anc]
-        qc = QuantumCircuit(*all_regs, name=f'Poisson{dim}D_{self.disc.upper()}')
-
-        # ── PREP ──────────────────────────────────────────────────────────
-        amps = np.zeros(K2)
-        for i, c in enumerate(coeffs):
-            amps[i] = np.sqrt(abs(c) / alpha)
+        amps = np.zeros(2 ** na)
+        amps[:L] = np.sqrt(np.abs(coeffs) / alpha)
         prep = _prep_gate(amps, label='Prep')
         qc.append(prep, qr_anc)
 
-        # ── SELECT ────────────────────────────────────────────────────────
-        # Each LCU term is a tuple of shift labels, one per spatial dimension
         sys_qubits = []
-        for qr in qr_dims:
+        for qr in reversed(qr_dims):
             sys_qubits.extend(list(qr))
-        flag_qubit = list(qr_flag)
 
-        for i, key in enumerate(labels):
-            # key is a tuple of length dim, e.g. ('Sc', 'I') for 2D
-            lbls = key if isinstance(key, tuple) else (key,)
-            sgn  = float(np.sign(coeffs[i]))
+        for i, key in enumerate(keys):
+            sgn = float(np.sign(coeffs[i]))
+            sel = QuantumCircuit(dim * m,
+                                 global_phase=(0.0 if sgn > 0 else np.pi),
+                                 name=f'SEL_{i}')
+            # sub-circuit qubit blocks follow the declaration order above
+            for d, lbl in enumerate(reversed(key)):
+                if lbl == 'I':
+                    continue
+                sel.compose(_label_gate(lbl, m),
+                            qubits=list(range(d * m, (d + 1) * m)),
+                            inplace=True)
+            ctrl = sel.to_gate().control(na, ctrl_state=i)
+            qc.append(ctrl, [*qr_anc, *sys_qubits])
 
-            # Build a circuit for this SELECT term on (sys + flag) qubits
-            # dim*m system + 1 flag = dim*m+1 qubits
-            n_sel = dim * m + dim
-            sel_circ = QuantumCircuit(n_sel, global_phase=(0 if sgn > 0 else np.pi),
-                                      name=f'SEL_{i}')
-
-            # Apply shift on each dimension register + accumulate flag
-            offset = 0
-            for d, lbl in enumerate(lbls):
-                shift_circ = _shift_gate(lbl, m)
-                flag_circ  = _flag_correction(m, lbl)
-
-                if lbl != 'I':
-                    # Flag first: _flag_correction tests the PRE-shift value.
-                    sel_circ.append(flag_circ.to_gate(),
-                                    list(range(offset, offset + m))
-                                    + [dim * m + d])
-                    sel_circ.append(shift_circ.to_gate(),
-                                    list(range(offset, offset + m)))
-                offset += m
-
-            # Control this whole SELECT block on ancilla = |i⟩
-            ctrl_gate = sel_circ.to_gate().control(
-                na_prep,
-                ctrl_state=format(i, f'0{na_prep}b')
-            )
-            qc.append(ctrl_gate, [*qr_anc, *sys_qubits, *flag_qubit])
-
-        # ── UNPREP ────────────────────────────────────────────────────────
         qc.append(prep.inverse(), qr_anc)
         return qc
 
     def unitary(self) -> np.ndarray:
-        """Full unitary (dense). Practical for m ≤ 2, dim ≤ 2."""
         return Operator(self.circuit()).data
 
     def verify(self) -> dict:
-        """
-        Check alpha * U[:N0, :N0] ≈ K_target.
-
-        The flag qubit doubles the system dimension, so the full system+flag
-        space has 2*N0 states; the encoded block is at U[:N0, :N0]
-        (ancilla=|0⟩, flag=|0⟩ subspace).
-        """
-        N0     = 2 ** (self.dim * self.m)
+        N0 = 2 ** (self.dim * self.m)
         target = self.target()
-        U      = self.unitary()
-        block  = self.alpha * U[:N0, :N0]
-        err    = float(np.linalg.norm(block - target) / np.linalg.norm(target))
-        uu     = float(np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
+        U = self.unitary()
         return {
             'dim': self.dim, 'disc': self.disc, 'm': self.m,
-            'alpha': self.alpha, 'num_terms': self.num_terms,
-            'num_qubits': self.num_qubits,
-            'block_encoding_rel_err': err,
-            'unitarity_err': uu,
+            'bc': self.enc.bc, 'alpha': self.alpha,
+            'num_terms': self.num_terms, 'num_qubits': self.num_qubits,
+            'block_encoding_rel_err': float(
+                np.linalg.norm(self.alpha * U[:N0, :N0] - target)
+                / np.linalg.norm(target)),
+            'unitarity_err': float(
+                np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0]))),
         }
 
 
 # ---------------------------------------------------------------------------
-# 3. Pattern-compression — Elasticity
+# 3. Shift decomposition -- elasticity
 # ---------------------------------------------------------------------------
 
 class ElasticityCircuit:
     """
     Qiskit block-encoding circuit for the 2D plane-stress Q4 elasticity
-    operator via pattern compression.
+    operator, via shift decomposition with reflection-based boundary
+    conditions.
 
-    System register: 2m+1 qubits (m x-qubits + m y-qubits + 1 DOF qubit)
-    Ancilla:         6 qubits  (5 PREP + 1 flag)
-    Total:           2m+7 qubits
-
-    Convention: MSB ancilla — system declared first.
-        alpha * U[:N0, :N0]  ≈  K     where N0 = 2 * N^2
-
-    Parameters
-    ----------
-    m  : int   — qubits per spatial dimension; N = 2**m interior nodes/dim
-    E  : float — Young's modulus (default 1.0)
-    nu : float — Poisson's ratio (default 0.3)
+    System register : 2m + 1 qubits (x, y, and the DOF qubit)
+    Ancilla         : ceil(log2 L) PREP qubits -- no flag qubit
     """
 
-    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3):
-        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu)
-        self.m   = m
-        self.E   = E
-        self.nu  = nu
+    #: DOF-qubit gates; iY = Z @ X is real and needs no global phase
+    _DOF_GATES = {'I': (), 'X': ('x',), 'Z': ('z',), 'iY': ('x', 'z')}
 
-    @property
-    def alpha(self) -> float:
-        return self.enc.alpha
+    def __init__(self, m: int, E: float = 1.0, nu: float = 0.3,
+                 bc: str = 'essential'):
+        self.enc = ElasticityPatternEncoding(m=m, E=E, nu=nu, bc=bc)
+        self.m, self.E, self.nu = m, E, nu
 
-    @property
-    def num_terms(self) -> int:
-        return self.enc.num_terms
-
-    @property
-    def num_system(self) -> int:
-        return self.enc.num_system   # 2m + 1
-
-    @property
-    def num_ancilla(self) -> int:
-        return self.enc.num_ancilla + 1   # 7  (5 PREP + 2 flag)
-
-    @property
-    def num_qubits(self) -> int:
-        return self.enc.num_qubits   # 2m + 7
+    alpha = property(lambda self: self.enc.alpha)
+    num_terms = property(lambda self: self.enc.num_terms)
+    num_system = property(lambda self: self.enc.num_system)
+    num_ancilla = property(lambda self: self.enc.num_ancilla)
+    num_qubits = property(lambda self: self.enc.num_qubits)
+    components = property(lambda self: self.enc.components)
 
     def target(self) -> np.ndarray:
         return self.enc.target()
 
     def circuit(self) -> QuantumCircuit:
         """
-        Return the elasticity pattern-compression LCU circuit (no measurements).
+        PREP - SELECT - PREP^dagger, no measurements.
 
-        Qubit layout (declaration order → Qiskit statevector ordering):
-            qr_x    (m qubits)   x spatial register
-            qr_y    (m qubits)   y spatial register
-            qr_dof  (1 qubit)    displacement DOF  (0=x-disp, 1=y-disp)
-            qr_flag (1 qubit)    Dirichlet boundary flag
-            qr_anc  (5 qubits)   PREP ancilla  (ceil(log2 17) = 5)
-
-        System = [qr_x, qr_y, qr_dof] → N0 = 2*N^2 states
-        Ancilla = [qr_flag, qr_anc]   → MSB, post-select on all zeros
-        Encoded block: alpha * U[:N0, :N0] ≈ K
+        ``target`` uses the index (jx * N + jy) * 2 + d, so the DOF qubit is
+        least significant and the x register most significant among the
+        system qubits: declare dof, y, x, then the PREP ancilla.
         """
-        m  = self.m
-        N  = 2 ** m
-        N0 = 2 * N * N   # system dimension
+        m = self.m
+        terms = self.enc.lcu_terms()
+        keys = list(terms)
+        coeffs = np.array([terms[k] for k in keys])
+        alpha = float(np.abs(coeffs).sum())
+        L = len(keys)
+        na = self.enc.num_ancilla
 
-        terms   = self.enc.lcu_terms()
-        labels  = list(terms)
-        coeffs  = np.array([terms[k] for k in labels])
-        alpha   = float(np.sum(np.abs(coeffs)))
-        L       = len(labels)
-        na_prep = int(np.ceil(np.log2(max(L, 2))))   # = 5 for L=17
-        K2      = 2 ** na_prep
+        qr_x = QuantumRegister(m, 'x')
+        qr_y = QuantumRegister(m, 'y')
+        qr_d = QuantumRegister(1, 'dof')
+        qr_anc = QuantumRegister(na, 'anc')
+        qc = QuantumCircuit(qr_d, qr_y, qr_x, qr_anc, name='ElasticityQ4')
 
-        # Registers
-        qr_x    = QuantumRegister(m, 'x')
-        qr_y    = QuantumRegister(m, 'y')
-        qr_dof  = QuantumRegister(1, 'dof')
-        qr_flag = QuantumRegister(2, 'flag')   # one wrap flag per spatial register
-        qr_anc  = QuantumRegister(na_prep, 'anc')
-
-        # MSB ancilla: system (x, y, dof) first; flag + PREP ancilla last
-        # Qiskit gives the FIRST declared register the LOWEST qubit indices,
-        # and qubit 0 is the LSB of the statevector index.  target() uses
-        # index = (jx*N + jy)*2 + d, so d is the LSB and jx the MSB: declare
-        # dof, y, x (then the ancillas).
-        qc = QuantumCircuit(qr_dof, qr_y, qr_x, qr_flag, qr_anc,
-                            name='ElasticityQ4')
-
-        # ── PREP ──────────────────────────────────────────────────────────
-        amps = np.zeros(K2)
-        for i, c in enumerate(coeffs):
-            amps[i] = np.sqrt(abs(c) / alpha)
+        amps = np.zeros(2 ** na)
+        amps[:L] = np.sqrt(np.abs(coeffs) / alpha)
         prep = _prep_gate(amps, label='Prep')
         qc.append(prep, qr_anc)
 
-        # ── SELECT ────────────────────────────────────────────────────────
-        # Each term: (x_label, y_label, dof_label)
-        # x/y labels  ∈ {'I', 'Sc', 'Scd'}  → cyclic shift on m-qubit register
-        # dof label   ∈ {'I', 'Z', 'X'}     → Pauli on 1 DOF qubit
+        sys_qubits = [*qr_d, *qr_y, *qr_x]
 
-        # Pauli gates on DOF qubit
-        dof_circuits = {
-            'I': QuantumCircuit(1, name='I'),
-            'X': QuantumCircuit(1, name='X'),
-            'Z': QuantumCircuit(1, name='Z'),
-        }
-        dof_circuits['X'].x(0)
-        dof_circuits['Z'].z(0)
-
-        x_qubits   = list(qr_x)
-        y_qubits   = list(qr_y)
-        dof_qubit  = list(qr_dof)
-        flag_qubit = list(qr_flag)
-
-        for i, key in enumerate(labels):
+        for i, key in enumerate(keys):
             xl, yl, dl = key
             sgn = float(np.sign(coeffs[i]))
-
-            # Build SELECT sub-circuit on (x + y + dof + flag) = 2m+2 qubits
-            n_sel = 2 * m + 3
-            sel_circ = QuantumCircuit(
-                n_sel,
-                global_phase=(0 if sgn > 0 else np.pi),
-                name=f'SEL_{i}'
-            )
-            # Qubit layout in sel_circ:
-            #   0..m-1          → x register
-            #   m..2m-1         → y register
-            #   2m              → DOF qubit
-            #   2m+1            → flag qubit
-
-            x_idx   = list(range(m))
-            y_idx   = list(range(m, 2 * m))
-            dof_idx = [2 * m]
-            flgx_idx = [2 * m + 1]
-            flgy_idx = [2 * m + 2]
-
-            # x shift
-            if xl != 'I':
-                sel_circ.append(_flag_correction(m, xl).to_gate(),
-                                x_idx + flgx_idx)
-                sel_circ.append(_shift_gate(xl, m).to_gate(), x_idx)
-            # y shift
+            sel = QuantumCircuit(2 * m + 1,
+                                 global_phase=(0.0 if sgn > 0 else np.pi),
+                                 name=f'SEL_{i}')
+            # qubit 0 = dof, 1..m = y, m+1..2m = x
+            for g in self._DOF_GATES[dl]:
+                getattr(sel, g)(0)
             if yl != 'I':
-                sel_circ.append(_flag_correction(m, yl).to_gate(),
-                                y_idx + flgy_idx)
-                sel_circ.append(_shift_gate(yl, m).to_gate(), y_idx)
-            # DOF Pauli
-            if dl != 'I':
-                sel_circ.append(dof_circuits[dl].to_gate(), dof_idx)
+                sel.compose(_label_gate(yl, m),
+                            qubits=list(range(1, m + 1)), inplace=True)
+            if xl != 'I':
+                sel.compose(_label_gate(xl, m),
+                            qubits=list(range(m + 1, 2 * m + 1)), inplace=True)
+            ctrl = sel.to_gate().control(na, ctrl_state=i)
+            qc.append(ctrl, [*qr_anc, *sys_qubits])
 
-            # Control on ancilla = |i⟩
-            ctrl_gate = sel_circ.to_gate().control(
-                na_prep,
-                ctrl_state=format(i, f'0{na_prep}b')
-            )
-            qc.append(ctrl_gate,
-                      [*qr_anc, *x_qubits, *y_qubits, *dof_qubit, *flag_qubit])
-
-        # ── UNPREP ────────────────────────────────────────────────────────
         qc.append(prep.inverse(), qr_anc)
         return qc
 
     def unitary(self) -> np.ndarray:
-        """Full unitary (dense). Practical for m = 1 only (9 qubits total)."""
         return Operator(self.circuit()).data
 
     def verify(self) -> dict:
-        """Check alpha * U[:N0, :N0] ≈ K_target."""
-        N0     = 2 * (2 ** self.m) ** 2
+        N0 = 2 * (2 ** self.m) ** 2
         target = self.target()
-        U      = self.unitary()
-        block  = self.alpha * U[:N0, :N0]
-        err    = float(np.linalg.norm(block - target) / np.linalg.norm(target))
-        uu     = float(np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0])))
+        U = self.unitary()
         return {
-            'nu': self.nu, 'E': self.E, 'm': self.m,
+            'm': self.m, 'nu': self.nu, 'bc': self.enc.bc,
             'alpha': self.alpha, 'num_terms': self.num_terms,
-            'num_qubits': self.num_qubits,
-            'block_encoding_rel_err': err,
-            'unitarity_err': uu,
+            'components': self.components, 'num_qubits': self.num_qubits,
+            'block_encoding_rel_err': float(
+                np.linalg.norm(self.alpha * U[:N0, :N0] - target)
+                / np.linalg.norm(target)),
+            'unitarity_err': float(
+                np.linalg.norm(U.conj().T @ U - np.eye(U.shape[0]))),
         }
 
 
