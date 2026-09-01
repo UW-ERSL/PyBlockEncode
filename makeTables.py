@@ -6,11 +6,12 @@ Place in the repository root (next to pyblockencode/) and run:
 
     python makeTables.py                 # tables/*.tex, gate counts to m = 6
     python makeTables.py --mmax 8        # push the scaling table further
-    python makeTables.py --no-legacy     # skip the slow MCX-ladder column
+    python makeTables.py --no-mcx        # skip the slow MCX-ladder column
 
 Writes into ./tables/ :
 
-    tab_lcu.tex           the 17 LCU terms, generated from lcu_terms()
+    tab_lcu.tex           the 17 periodic LCU terms, from lcu_terms()
+    tab_boundary.tex      L, alpha and components under each boundary treatment
     tab_resources.tex     resource summary for the encoding
     tab_gatecounts.tex    measured T / Toffoli / depth vs m, both constructions
     tab_verification.tex  block-encoding errors, Poisson and elasticity
@@ -19,13 +20,14 @@ Every number is computed, never transcribed, so the tables cannot drift from
 the code.  Each file is a bare \\begin{table}...\\end{table} meant to be
 \\input{} from the manuscript; none of them emit \\documentclass or preamble.
 
-Expensive transpilation results are cached in .paper_cache.json and shared
-with makeFigures.py.  Delete that file to force recomputation.
+Nothing is cached: every run transpiles from scratch.  A cache is the wrong
+trade here, because it silently survives a change to the encoders and hands
+back gate counts for circuits that no longer exist.  Use --mmax to bound the
+cost instead.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sys
@@ -34,30 +36,10 @@ import time
 import numpy as np
 
 TABLES = "tables"
-CACHE = ".paper_cache.json"
 
 # Clifford+T.  rz survives from the constant-size PREP state preparation and
 # does not affect the scaling.
 BASIS = ['h', 't', 'tdg', 's', 'sdg', 'x', 'z', 'cx', 'rz']
-
-
-# ---------------------------------------------------------------------------
-# cache shared with makeFigures.py
-# ---------------------------------------------------------------------------
-
-def cache_load() -> dict:
-    if os.path.exists(CACHE):
-        try:
-            with open(CACHE) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-def cache_save(d: dict) -> None:
-    with open(CACHE, 'w') as f:
-        json.dump(d, f, indent=1, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------
@@ -98,22 +80,34 @@ def write(name: str, body: str) -> None:
 # Table 1 - the 17 LCU terms
 # ---------------------------------------------------------------------------
 
-SYM = {'I': r'$I$', 'Sc': r'$S$', 'Scd': r'$S^\dagger$',
-       'X': r'$X$', 'Z': r'$Z$'}
+# The unitary set of bc.py: three labels for the periodic operator, five once
+# essential conditions split each shift, seven with traction-free corrections.
+SYM = {'I': r'$I$',
+       'Sc': r'$S$', 'R0.Sc': r'$R_0 S$',
+       'Scd': r'$S^\dagger$', 'RN.Scd': r'$R_{N-1} S^\dagger$',
+       'R0': r'$R_0$', 'RN': r'$R_{N-1}$',
+       'X': r'$X$', 'Z': r'$Z$', 'iY': r'$iY$'}
 
-# Print the terms grouped by DOF channel, and inside a channel in a stable
-# order, so the table is reproducible run to run.
-ORDER = {'I': 0, 'Sc': 1, 'Scd': 2}
+# Print the terms grouped by Pauli component, and inside a component in a
+# stable order, so the table is reproducible run to run.
+ORDER = {'I': 0, 'Sc': 1, 'R0.Sc': 2, 'Scd': 3, 'RN.Scd': 4,
+         'R0': 5, 'RN': 6}
+COMP_ORDER = {'I': 0, 'Z': 1, 'X': 2, 'iY': 3}
 
 
 def table_lcu(nu: float = 0.3) -> None:
     from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
-    enc = ElasticityPatternEncoding(m=3, E=1.0, nu=nu)
+
+    # Table 1 of the paper is Proposition 1: the periodic operator, before
+    # any boundary treatment splits the shifts.  Passing bc='essential' here
+    # would produce the correct 49-term encoding and a table too long to
+    # print; the boundary treatments are summarized in tab_boundary instead.
+    enc = ElasticityPatternEncoding(m=3, E=1.0, nu=nu, bc='periodic')
     terms = enc.lcu_terms()
 
     def key(k):
         xl, yl, dl = k
-        return ({'I': 0, 'Z': 1, 'X': 2}[dl], ORDER[xl], ORDER[yl])
+        return (COMP_ORDER[dl], ORDER[xl], ORDER[yl])
 
     rows = []
     for k in sorted(terms, key=key):
@@ -124,23 +118,26 @@ def table_lcu(nu: float = 0.3) -> None:
     nI = sum(1 for k in terms if k[2] == 'I')
     nZ = sum(1 for k in terms if k[2] == 'Z')
     nX = sum(1 for k in terms if k[2] == 'X')
+    assert len(terms) == 17, f"expected the 17 periodic terms, got {len(terms)}"
 
     body = rf"""\begin{{table}}[t]
 \centering
 \footnotesize
 \setlength{{\tabcolsep}}{{4pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{The {len(terms)} LCU terms of the plane-stress $Q_4$ elasticity operator
-($E=1$, $\nu={nu}$), grouped by DOF channel.  With $a^K$, $b^M$, $g$ the
+\caption{{The {len(terms)} LCU terms of the periodic plane-stress $Q_4$ elasticity
+operator ($E=1$, $\nu={nu}$), grouped by Pauli component.  With $a^K$, $b^M$, $g$ the
 cyclic-shift coefficients of $\mathbf{{K}}_1$, $\mathbf{{M}}_1$, $\mathbf{{G}}_1$
 from Eqs.~\eqref{{eq:K1-shift}}--\eqref{{eq:G1-shift}}, the coefficients are
 $c_{{pqI}} = C\frac{{3-\nu}}{{4}}(a^K_p b^M_q + b^M_p a^K_q)$,
 $c_{{pqZ}} = C\frac{{1+\nu}}{{4}}(a^K_p b^M_q - b^M_p a^K_q)$ and
 $c_{{pqX}} = -C\frac{{1+\nu}}{{2}} g_p g_q$.
-The $Z$ channel is antisymmetric under $p\leftrightarrow q$, so it vanishes on the
-three diagonal pairs and on $(S,S^\dagger)$, $(S^\dagger,S)$, leaving {nZ} of 9
-terms; with {nI} in the $I$ channel and {nX} in the $X$ channel the total is
-{len(terms)}, independent of $\nu$ and $N$.}}
+The $Z$ component is antisymmetric under $p\leftrightarrow q$, so it vanishes on
+the three diagonal pairs and on $(S,S^\dagger)$, $(S^\dagger,S)$, leaving {nZ} of
+9 terms; with {nI} in the $I$ component and {nX} in the $X$ component the total
+is {len(terms)}, independent of $\nu$ and $N$.  Imposing boundary conditions
+replaces each shift by a pair of reflected halves without changing $\alpha$;
+see Table~\ref{{tab:boundary}}.}}
 \label{{tab:lcu}}
 \begin{{tabular}}{{@{{}}lllr@{{}}}}
 \toprule
@@ -157,16 +154,75 @@ $V_x$ & $V_y$ & $\sigma_{{\mathrm{{dof}}}}$ & coefficient \\
 
 
 # ---------------------------------------------------------------------------
+# Table - boundary treatments
+# ---------------------------------------------------------------------------
+
+def table_boundary(nu: float = 0.3) -> None:
+    """L, alpha and the Pauli components under each boundary treatment."""
+    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+
+    cases = [
+        ("none (periodic)", "periodic"),
+        ("all four (essential)", "essential"),
+        ("left and right", [("clamped", "clamped"), ("free", "free")]),
+        ("left only", [("clamped", "free"), ("free", "free")]),
+        ("none (traction-free)", "free"),
+    ]
+    rows = []
+    for label, spec in cases:
+        e = ElasticityPatternEncoding(m=3, E=1.0, nu=nu, bc=spec)
+        comps = ", ".join(SYM[c] for c in e.components)
+        rows.append(f"{label} & {comps} & ${e.num_terms}$ & "
+                    f"${e.alpha:.3f}$ & ${e.num_qubits}$ \\\\")
+
+    e13 = ElasticityPatternEncoding(m=3, E=1.0, nu=1 / 3, bc="free")
+
+    body = rf"""\begin{{table}}[t]
+\centering
+\footnotesize
+\setlength{{\tabcolsep}}{{5pt}}
+\renewcommand{{\arraystretch}}{{1.15}}
+\caption{{Boundary treatments for the plane-stress $Q_4$ elasticity operator
+($E=1$, $\nu={nu}$), on an $N\times N$ grid with $N=2^m$.  Unlisted edges are
+traction-free.  Conditions are imposed by adjoining reflections to the unitary
+set, so no case needs a flag qubit and $\alpha$ never exceeds the
+traction-free value.  The $iY$ component appears as soon as one direction
+carries a diagonal correction, so clamping two opposite edges already requires
+four components rather than three.  At $\nu=1/3$ the $iY$ coefficient
+$(1-3\nu)/4$ vanishes and the traction-free count drops to ${e13.num_terms}$.
+All rows are independent of $N$ and verified against a direct $Q_4$ assembly.}}
+\label{{tab:boundary}}
+\begin{{tabular}}{{@{{}}llrrr@{{}}}}
+\toprule
+Edges clamped & Pauli components & $L$ & $\alpha$ & qubits \\
+\midrule
+{chr(10).join(rows)}
+\bottomrule
+\end{{tabular}}
+\end{{table}}
+"""
+    write("tab_boundary.tex", body)
+
+
+# ---------------------------------------------------------------------------
 # Table 2 - resource summary
 # ---------------------------------------------------------------------------
 
 def table_resources(gc: dict) -> None:
     from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
-    from pyblockencode import operators
+    from pyblockencode.linear_circuits import LinearElasticityCircuit
 
     a0 = ElasticityPatternEncoding(m=3, nu=0.0).alpha
     a3 = ElasticityPatternEncoding(m=3, nu=0.3).alpha
     a45 = ElasticityPatternEncoding(m=3, nu=0.45).alpha
+
+    per = ElasticityPatternEncoding(m=3, nu=0.3, bc='periodic')
+    ess = ElasticityPatternEncoding(m=3, nu=0.3, bc='essential')
+    fre = ElasticityPatternEncoding(m=3, nu=0.3, bc='free')
+
+    # abstract LCU accounting, and the extra ancillas the linear-depth
+    # implementation asks for on top of it
+    lin = LinearElasticityCircuit(m=3, nu=0.3)
 
     ms = sorted(int(k) for k in gc)
     if len(ms) >= 2:
@@ -182,27 +238,33 @@ def table_resources(gc: dict) -> None:
 \footnotesize
 \setlength{{\tabcolsep}}{{5pt}}
 \renewcommand{{\arraystretch}}{{1.15}}
-\caption{{Resources for the pattern-compression block encoding of the 2D
-plane-stress $Q_4$ elasticity operator ($E=1$), on an $N\times N$ grid with
-$N=2^m$.  The $T$-count is measured by transpiling the circuit to a Clifford$+T$
-basis, not inferred from a citation.}}
+\caption{{Resources for the shift-decomposition block encoding of the 2D
+plane-stress $Q_4$ elasticity operator ($E=1$) with essential boundary
+conditions, on an $N\times N$ grid with $N=2^m$.  Boundary conditions are
+carried by reflections adjoined to the unitary set, so the ancilla register is
+PREP only.  The $T$-count is measured by transpiling the circuit to a
+Clifford$+T$ basis, not inferred from a citation.}}
 \label{{tab:resources}}
 \begin{{tabular}}{{@{{}}ll@{{}}}}
 \toprule
 Quantity & Value \\
 \midrule
 System qubits            & $2m+1$ \\
-Ancilla qubits           & $m+7$ \\
-\quad PREP / flag / control / carry & $5$ / $2$ / $1$ / $m-1$ \\
-Total qubits             & $\mathbf{{3m+8}}$ \\
-LCU terms $L$            & $17$ (constant in $N$) \\
+PREP ancilla             & $\lceil\log_2 {ess.num_terms}\rceil = {ess.num_ancilla}$ \\
+Flag ancilla             & none \\
+Total qubits             & $\mathbf{{2m+{ess.num_qubits - 6}}}$ \\
+\quad linear-depth variant   & $+m$ (control $+$ $m-1$ carry) $= 3m+{lin.num_qubits - 9}$ \\
+LCU terms $L$            & ${per.num_terms}$ periodic / ${ess.num_terms}$ essential /
+                           ${fre.num_terms}$ traction-free (constant in $N$) \\
+Pauli components         & $I,Z,X$ \ ($+\,iY$ when a direction is free) \\
 Subnormalization $\alpha$ & $\dfrac{{E(33+\nu)}}{{6(1-\nu^2)}}$ \ (constant in $N$) \\[4pt]
                          & ${a0:.3f}$ / ${a3:.3f}$ / ${a45:.3f}$ at $\nu = 0$ / $0.3$ / $0.45$ \\
-$\alpha/\norm{{\mathbf{{K}}}}$ & $\to (33+\nu)/24 \in [1.375,\,1.40]$ \\
+$\alpha/\norm{{\mathbf{{K}}}}_2$ & $\to (33+\nu)/24 \in [1.375,\,1.40]$ \\
+$\alpha/\norm{{\mathbf{{K}}}}_\infty$ & $\approx 1.18$--$1.22$ \\
 $T$-count                & {tfit} \ (measured, $\mathcal{{O}}(\log N)$) \\
 Circuit depth            & $\mathcal{{O}}(m) = \mathcal{{O}}(\log N)$ \\
-Boundary conditions      & homogeneous Dirichlet \\
-\quad enforced by            & one wrap flag per register \\
+Boundary conditions      & essential, traction-free, mixed \\
+\quad enforced by            & reflections in the unitary set \\
 Verification error       & $\sim10^{{-13}}$ (see Table~\ref{{tab:verification}}) \\
 \bottomrule
 \end{{tabular}}
@@ -215,29 +277,26 @@ Verification error       & $\sim10^{{-13}}$ (see Table~\ref{{tab:verification}})
 # Table 3 - measured gate counts
 # ---------------------------------------------------------------------------
 
-def collect_gatecounts(mmax: int, legacy: bool, cache: dict) -> dict:
+def collect_gatecounts(mmax: int, mcx: bool) -> dict:
     from qiskit import transpile
     from pyblockencode.linear_circuits import LinearElasticityCircuit
     from pyblockencode.qiskit_encoding import ElasticityCircuit
 
-    gc = cache.get('gatecounts', {})
+    gc: dict = {}
     for m in range(2, mmax + 1):
-        rec = gc.get(str(m), {})
-        need_new = 'new_t' not in rec
-        need_old = legacy and 'old_t' not in rec
-        if not (need_new or need_old):
-            continue
+        rec: dict = {}
         print(f"  transpiling m={m} ...", end='', flush=True)
         t0 = time.time()
-        if need_new:
-            n = LinearElasticityCircuit(m=m, nu=0.3)
-            tq = transpile(n.circuit(), basis_gates=BASIS, optimization_level=1)
-            ops = tq.count_ops()
-            rec['new_t'] = ops.get('t', 0) + ops.get('tdg', 0)
-            rec['new_cx'] = ops.get('cx', 0)
-            rec['new_depth'] = tq.depth()
-            rec['new_qubits'] = n.num_qubits
-        if need_old:
+
+        n = LinearElasticityCircuit(m=m, nu=0.3)
+        tq = transpile(n.circuit(), basis_gates=BASIS, optimization_level=1)
+        ops = tq.count_ops()
+        rec['new_t'] = ops.get('t', 0) + ops.get('tdg', 0)
+        rec['new_cx'] = ops.get('cx', 0)
+        rec['new_depth'] = tq.depth()
+        rec['new_qubits'] = n.num_qubits
+
+        if mcx:
             o = ElasticityCircuit(m=m, nu=0.3)
             tq = transpile(o.circuit(), basis_gates=BASIS, optimization_level=1)
             ops = tq.count_ops()
@@ -245,19 +304,18 @@ def collect_gatecounts(mmax: int, legacy: bool, cache: dict) -> dict:
             rec['old_cx'] = ops.get('cx', 0)
             rec['old_depth'] = tq.depth()
             rec['old_qubits'] = o.num_qubits
+
         gc[str(m)] = rec
         print(f" {time.time()-t0:.1f}s")
-    cache['gatecounts'] = gc
-    cache_save(cache)
     return gc
 
 
-def table_gatecounts(gc: dict, legacy: bool) -> None:
+def table_gatecounts(gc: dict, mcx: bool) -> None:
     ms = sorted(int(k) for k in gc)
     rows = []
     for m in ms:
         r = gc[str(m)]
-        if legacy and 'old_t' in r:
+        if mcx and 'old_t' in r:
             ratio = r['old_t'] / max(r['new_t'], 1)
             rows.append(
                 f"${m}$ & ${2**m}$ & {thousands(r['old_t'])} & ${r['old_qubits']}$ & "
@@ -300,13 +358,10 @@ $m$ & $N$ & $T$ & qubits & $T$ & depth & qubits & speedup \\
 # Table 4 - verification
 # ---------------------------------------------------------------------------
 
-def collect_verification(cache: dict) -> list:
+def collect_verification() -> list:
     from pyblockencode.linear_circuits import (
         LinearElasticityCircuit, LinearPoissonCircuit, verify_columns)
 
-    rows = cache.get('verification')
-    if rows:
-        return rows
     rows = []
     cases = [("elasticity, $\\nu=0$", lambda: LinearElasticityCircuit(m=2, nu=0.0)),
              ("elasticity, $\\nu=0.3$", lambda: LinearElasticityCircuit(m=2, nu=0.3)),
@@ -323,8 +378,6 @@ def collect_verification(cache: dict) -> list:
         rows.append({'label': label, 'm': enc.m, 'qubits': r['num_qubits'],
                      'N0': r['N0'], 'err': r['block_encoding_rel_err']})
         print(f" {r['block_encoding_rel_err']:.1e}  ({time.time()-t0:.1f}s)")
-    cache['verification'] = rows
-    cache_save(cache)
     return rows
 
 
@@ -363,8 +416,9 @@ def main():
     ap.add_argument('--mmax', type=int, default=6,
                     help='largest m in the gate-count table (default 6)')
     ap.add_argument('--nu', type=float, default=0.3)
-    ap.add_argument('--no-legacy', action='store_true',
-                    help='skip the MCX-ladder column (it is the slow one)')
+    ap.add_argument('--no-mcx', action='store_true',
+                    help='skip the MCX-ladder comparison column; it is the '
+                         'slow one, and it grows fast (46s at m=4)')
     ap.add_argument('--no-verify', action='store_true',
                     help='skip the verification table (statevector sims)')
     args = ap.parse_args()
@@ -375,22 +429,24 @@ def main():
         sys.exit("Run this from the repository root (the folder holding "
                  "pyblockencode/).")
 
-    cache = cache_load()
-    legacy = not args.no_legacy
+    mcx = not args.no_mcx
 
     print("LCU terms ...")
     table_lcu(args.nu)
 
+    print("boundary treatments ...")
+    table_boundary(args.nu)
+
     print("gate counts ...")
-    gc = collect_gatecounts(args.mmax, legacy, cache)
-    table_gatecounts(gc, legacy)
+    gc = collect_gatecounts(args.mmax, mcx)
+    table_gatecounts(gc, mcx)
 
     print("resources ...")
     table_resources(gc)
 
     if not args.no_verify:
         print("verification ...")
-        table_verification(collect_verification(cache))
+        table_verification(collect_verification())
 
     print(f"\nDone.  \\input{{tables/...}} from the manuscript.")
 

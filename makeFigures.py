@@ -6,12 +6,20 @@ Place in the repository root (next to pyblockencode/) and run:
 
     python makeFigures.py                # figs/*.pdf, gate counts to m = 6
     python makeFigures.py --mmax 8       # push the scaling figure further
-    python makeFigures.py --no-legacy    # skip the slow MCX-ladder series
+    python makeFigures.py --mcx          # add the MCX-ladder comparison series
+
+The MCX-ladder series is opt-in because it is the expensive half of the run:
+its T-count is superlinear in m where the linear incrementer is affine, so it
+costs 46s at m = 4 and grows fast.  Pass --mcx when regenerating the figure
+for the manuscript; without it fig_scaling shows the linear series alone.
 
 Writes into ./figs/ :
 
     fig_scaling.pdf   measured T-count vs m, MCX ladder vs linear incrementer
-    fig_alpha.pdf     alpha(nu) and the convergence of alpha/||K|| to (33+nu)/24
+    fig_alpha.pdf     alpha(nu) and the convergence of alpha/||K||_2 to
+                      (33+nu)/24
+    fig_boundary.pdf  term count and subnormalization under each boundary
+                      treatment, and where the fourth Pauli component appears
     fig_shear.pdf     the elasticity operator in component-major ordering,
                       at nu = 0 and nu = 0.3, showing that the shear blocks
                       do NOT vanish at nu = 0
@@ -22,13 +30,14 @@ line style as well as hue, so the figures survive grayscale printing and
 colour-vision deficiency; the categorical hues are slots 1-3 of a palette
 validated for all-pairs CVD separation.
 
-Expensive transpilation results are cached in .paper_cache.json and shared
-with makeTables.py.  Delete that file to force recomputation.
+Nothing is cached: every run transpiles from scratch.  A cache keyed only on
+m silently survives a change to the encoders and hands back gate counts for
+circuits that no longer exist, which is a worse failure than a slow run.  Use
+--mmax and --mcx to bound the cost.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -40,7 +49,6 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, SymLogNorm
 
 FIGS = "figs"
-CACHE = ".paper_cache.json"
 BASIS = ['h', 't', 'tdg', 's', 'sdg', 'x', 'z', 'cx', 'rz']
 
 # Categorical slots 1-3 of the validated palette (all-pairs CVD dE 9.2,
@@ -91,21 +99,6 @@ def despine(ax):
     ax.spines['right'].set_visible(False)
 
 
-def cache_load() -> dict:
-    if os.path.exists(CACHE):
-        try:
-            with open(CACHE) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-def cache_save(d: dict) -> None:
-    with open(CACHE, 'w') as f:
-        json.dump(d, f, indent=1, sort_keys=True)
-
-
 def save(fig, name):
     os.makedirs(FIGS, exist_ok=True)
     path = os.path.join(FIGS, name)
@@ -115,41 +108,37 @@ def save(fig, name):
 
 
 # ---------------------------------------------------------------------------
-# data collection (shared cache with makeTables.py)
+# data collection
 # ---------------------------------------------------------------------------
 
-def collect_gatecounts(mmax: int, legacy: bool, cache: dict) -> dict:
+def collect_gatecounts(mmax: int, mcx: bool) -> dict:
     from qiskit import transpile
     from pyblockencode.linear_circuits import LinearElasticityCircuit
     from pyblockencode.qiskit_encoding import ElasticityCircuit
 
-    gc = cache.get('gatecounts', {})
+    gc: dict = {}
     for m in range(2, mmax + 1):
-        rec = gc.get(str(m), {})
-        need_new = 'new_t' not in rec
-        need_old = legacy and 'old_t' not in rec
-        if not (need_new or need_old):
-            continue
+        rec: dict = {}
         print(f"  transpiling m={m} ...", end='', flush=True)
         t0 = time.time()
-        if need_new:
-            n = LinearElasticityCircuit(m=m, nu=0.3)
-            tq = transpile(n.circuit(), basis_gates=BASIS, optimization_level=1)
-            ops = tq.count_ops()
-            rec.update(new_t=ops.get('t', 0) + ops.get('tdg', 0),
-                       new_cx=ops.get('cx', 0), new_depth=tq.depth(),
-                       new_qubits=n.num_qubits)
-        if need_old:
-            o = ElasticityCircuit(m=m, nu=0.3)
+
+        n = LinearElasticityCircuit(m=m, nu=0.3, bc='essential')
+        tq = transpile(n.circuit(), basis_gates=BASIS, optimization_level=1)
+        ops = tq.count_ops()
+        rec.update(new_t=ops.get('t', 0) + ops.get('tdg', 0),
+                   new_cx=ops.get('cx', 0), new_depth=tq.depth(),
+                   new_qubits=n.num_qubits)
+
+        if mcx:
+            o = ElasticityCircuit(m=m, nu=0.3, bc='essential')
             tq = transpile(o.circuit(), basis_gates=BASIS, optimization_level=1)
             ops = tq.count_ops()
             rec.update(old_t=ops.get('t', 0) + ops.get('tdg', 0),
                        old_cx=ops.get('cx', 0), old_depth=tq.depth(),
                        old_qubits=o.num_qubits)
+
         gc[str(m)] = rec
         print(f" {time.time()-t0:.1f}s")
-    cache['gatecounts'] = gc
-    cache_save(cache)
     return gc
 
 
@@ -157,10 +146,10 @@ def collect_gatecounts(mmax: int, legacy: bool, cache: dict) -> dict:
 # Figure 1 - measured scaling
 # ---------------------------------------------------------------------------
 
-def fig_scaling(gc: dict, legacy: bool):
+def fig_scaling(gc: dict, mcx: bool):
     ms = sorted(int(k) for k in gc)
     new = np.array([gc[str(m)]['new_t'] for m in ms], float)
-    have_old = legacy and all('old_t' in gc[str(m)] for m in ms)
+    have_old = mcx and all('old_t' in gc[str(m)] for m in ms)
     old = np.array([gc[str(m)]['old_t'] for m in ms], float) if have_old else None
 
     fig, ax = plt.subplots(figsize=(COL_W, 2.5))
@@ -169,10 +158,16 @@ def fig_scaling(gc: dict, legacy: bool):
 
     x = np.array(ms, float)
     if have_old:
-        p_old = np.polyfit(np.log(x[-3:]), np.log(old[-3:]), 1)[0]
+        # Fit log T = log a + p log m over the top of the range.  Annotate
+        # the whole fitted law, not just the exponent: the linear series is
+        # labelled with a value, so a bare m^p beside it on a log axis reads
+        # as one too.
+        p_old, log_a = np.polyfit(np.log(x[-3:]), np.log(old[-3:]), 1)
+        a_old = np.exp(log_a)
+        mant, expo = f"{a_old:.1e}".split('e')
         ax.plot(x, old, marker='s', ls='--', color=C_ORANGE,
                 label='MCX ladder', zorder=3)
-        ax.annotate(rf'$\sim m^{{{p_old:.1f}}}$',
+        ax.annotate(rf'$\approx {mant}\times 10^{{{int(expo)}}}\,m^{{{p_old:.1f}}}$',
                     xy=(x[-1], old[-1]), xytext=(-4, -13),
                     textcoords='offset points', ha='right', va='top',
                     color=C_ORANGE, fontsize=7.5)
@@ -211,39 +206,37 @@ def _spec_norm(m: int, nu: float) -> float:
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as spla
+    from pyblockencode import bc
 
     N = 2 ** m
     C = 1.0 / (1.0 - nu ** 2)
-    K1 = sp.diags([-1., 2., -1.], [-1, 0, 1], shape=(N, N), format='csr')
-    M1 = sp.diags([1., 4., 1.], [-1, 0, 1], shape=(N, N), format='csr') / 6.0
-    G1 = sp.diags([-1., 1.], [-1, 1], shape=(N, N), format='csr') / 2.0
+    # the same 1D factors the encoder uses, so the two cannot drift apart
+    K1 = sp.csr_matrix(bc.dense(bc.factor('K', 'essential'), N))
+    M1 = sp.csr_matrix(bc.dense(bc.factor('M', 'essential'), N))
+    G1 = sp.csr_matrix(bc.dense(bc.factor('G', 'essential'), N))
 
     Kxx = C * (sp.kron(K1, M1) + (1 - nu) / 2 * sp.kron(M1, K1))
     Kyy = C * ((1 - nu) / 2 * sp.kron(K1, M1) + sp.kron(M1, K1))
-    Kxy = -C * (1 + nu) / 2 * sp.kron(G1, G1)
+    Kxy = C * (nu * sp.kron(G1.T, G1)
+               + (1 - nu) / 2 * sp.kron(G1, G1.T))
     K = sp.bmat([[Kxx, Kxy], [Kxy.T, Kyy]], format='csr')
     return float(spla.eigsh(K, k=1, which='LA',
                             return_eigenvectors=False, tol=1e-10)[0])
 
 
-def fig_alpha(cache: dict, mmax_norm: int = 8):
+def fig_alpha(mmax_norm: int = 8):
     from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
 
-    ratios = cache.get('alpha_ratio', {})
+    ratios: dict = {}
     nus = [0.0, 0.3, 0.45]
     for nu in nus:
-        key = f"{nu}"
-        have = ratios.get(key, {})
+        have = {}
         for m in range(2, mmax_norm + 1):
-            if str(m) in have:
-                continue
-            print(f"  ||K|| for nu={nu}, m={m} ...", end='', flush=True)
+            print(f"  ||K||_2 for nu={nu}, m={m} ...", end='', flush=True)
             nk = _spec_norm(m, nu)
             have[str(m)] = nk
             print(f" {nk:.4f}")
-        ratios[key] = have
-    cache['alpha_ratio'] = ratios
-    cache_save(cache)
+        ratios[f"{nu}"] = have
 
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(FULL_W, 2.4))
 
@@ -276,7 +269,7 @@ def fig_alpha(cache: dict, mmax_norm: int = 8):
         axR.axhline((33 + nu) / 24, color=col, lw=0.8, ls=':', zorder=2)
     axR.set_xticks(ms)
     axR.set_xlabel(r'qubits per dimension $m=\log_2 N$')
-    axR.set_ylabel(r'$\alpha\,/\,\|\mathbf{K}\|$')
+    axR.set_ylabel(r'$\alpha\,/\,\|\mathbf{K}\|_2$')
     axR.set_xlim(ms[0] - 0.2, ms[-1] + 0.2)
     axR.legend(frameon=False, loc='upper right', handlelength=1.8)
     axR.set_title(r'(b) convergence to $(33+\nu)/24$ (dotted)',
@@ -285,6 +278,74 @@ def fig_alpha(cache: dict, mmax_norm: int = 8):
 
     fig.tight_layout(w_pad=2.0)
     save(fig, 'fig_alpha.pdf')
+
+
+# ---------------------------------------------------------------------------
+# Figure - boundary treatments
+# ---------------------------------------------------------------------------
+
+def fig_boundary(nu: float = 0.3):
+    """Term count and subnormalization across the boundary treatments.
+
+    Both panels make the same point from different sides: imposing boundary
+    conditions costs terms and never costs subnormalization, and the fourth
+    Pauli component appears as soon as one direction carries a diagonal
+    correction.
+    """
+    from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
+
+    cases = [
+        ("periodic", "periodic"),
+        ("all four\nclamped", "essential"),
+        ("left and\nright", [("clamped", "clamped"), ("free", "free")]),
+        ("left\nonly", [("clamped", "free"), ("free", "free")]),
+        ("traction-\nfree", "free"),
+    ]
+    labels, Ls, alphas, four = [], [], [], []
+    for label, spec in cases:
+        e = ElasticityPatternEncoding(m=3, nu=nu, bc=spec)
+        labels.append(label)
+        Ls.append(e.num_terms)
+        alphas.append(e.alpha)
+        four.append("iY" in e.components)
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(FULL_W, 2.4))
+    x = np.arange(len(cases))
+
+    # (a) term count, coloured by how many Pauli components are needed
+    axL.set_axisbelow(True); axL.grid(True, axis='y')
+    cols = [C_ORANGE if f else C_BLUE for f in four]
+    axL.bar(x, Ls, color=cols, width=0.62, zorder=3)
+    for xi, L in zip(x, Ls):
+        axL.annotate(str(L), xy=(xi, L), xytext=(0, 3),
+                     textcoords='offset points', ha='center',
+                     fontsize=6.5, color=INK2)
+    axL.set_xticks(x); axL.set_xticklabels(labels, fontsize=6.5)
+    axL.set_ylabel('LCU terms $L$')
+    axL.set_ylim(0, max(Ls) * 1.18)
+    axL.set_title(r'(a) term count; orange needs the fourth component $iY$',
+                  loc='left', color=INK2)
+    despine(axL)
+
+    # (b) alpha, against the two bounds it lies between
+    axR.set_axisbelow(True); axR.grid(True, axis='y')
+    axR.plot(x, alphas, marker='o', color=C_BLUE, zorder=4)
+    axR.axhline(alphas[0], color=INK2, lw=0.8, ls=':', zorder=2)
+    axR.axhline(max(alphas), color=INK2, lw=0.8, ls=':', zorder=2)
+    for xi, a in zip(x, alphas):
+        axR.annotate(f'{a:.3f}', xy=(xi, a), xytext=(0, 5),
+                     textcoords='offset points', ha='center',
+                     fontsize=6.5, color=INK2)
+    axR.set_xticks(x); axR.set_xticklabels(labels, fontsize=6.5)
+    axR.set_ylabel(r'subnormalization $\alpha$')
+    span = max(alphas) - min(alphas)
+    axR.set_ylim(min(alphas) - 0.35 * span, max(alphas) + 0.55 * span)
+    axR.set_title(rf'(b) $\alpha$ at $\nu={nu}$, bounded by the two extremes',
+                  loc='left', color=INK2)
+    despine(axR)
+
+    fig.tight_layout(w_pad=2.0)
+    save(fig, 'fig_boundary.pdf')
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +403,9 @@ def fig_shear(m: int = 2):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mmax', type=int, default=6)
-    ap.add_argument('--no-legacy', action='store_true')
+    ap.add_argument('--mcx', action='store_true',
+                    help='include the MCX-ladder comparison series; it is the '
+                         'slow half of the run (46s at m=4, superlinear)')
     args = ap.parse_args()
 
     try:
@@ -352,13 +415,17 @@ def main():
                  "pyblockencode/).")
 
     style()
-    cache = cache_load()
-    legacy = not args.no_legacy
+    mcx = args.mcx
 
     print("scaling ...")
-    fig_scaling(collect_gatecounts(args.mmax, legacy, cache), legacy)
+    if not mcx:
+        print("  (MCX-ladder series omitted; rerun with --mcx for the "
+              "manuscript figure)")
+    fig_scaling(collect_gatecounts(args.mmax, mcx), mcx)
     print("subnormalization ...")
-    fig_alpha(cache)
+    fig_alpha()
+    print("boundary treatments ...")
+    fig_boundary()
     print("shear structure ...")
     fig_shear()
 
