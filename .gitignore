@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+tables/
+figs/
+*.egg
+.paper_cache.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output files
+*.png
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+

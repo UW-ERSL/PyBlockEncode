@@ -71,28 +71,16 @@ def _shift_gate(lbl: str, m: int) -> QuantumCircuit:
     qc = QuantumCircuit(m, name=lbl)
     if lbl == 'I':
         return qc
-    # Cyclic increment using X + multi-controlled-X ladder (ripple carry style)
-    # For Sc (increment): flip qubit k if all lower qubits are |1⟩
-    # For Scd (decrement): flip qubit k if all lower qubits are |0⟩
+    # Qiskit convention: qubit 0 is the LSB of the integer index.
+    # Increment: apply the high-order carries FIRST, LSB flip LAST.
     if lbl == 'Sc':
-        # Increment: apply X gates from LSB upward with controls
-        for k in range(m - 1, -1, -1):
-            if k == m - 1:
-                qc.x(k)          # LSB: always flip
-            else:
-                # flip qubit k if qubits k+1..m-1 are all |1⟩
-                qc.mcx(list(range(k + 1, m)), k)
-    else:  # Scd — decrement: flip from LSB upward if lower bits are all |0⟩
-        for k in range(m - 1, -1, -1):
-            if k == m - 1:
-                qc.x(k)
-            else:
-                # X the lower qubits to convert |0⟩ control to |1⟩ control
-                for j in range(k + 1, m):
-                    qc.x(j)
-                qc.mcx(list(range(k + 1, m)), k)
-                for j in range(k + 1, m):
-                    qc.x(j)
+        for k in range(m - 1, 0, -1):
+            qc.mcx(list(range(k)), k)
+        qc.x(0)
+    else:  # Scd = inverse of Sc (reverse order; all gates are self-inverse)
+        qc.x(0)
+        for k in range(1, m):
+            qc.mcx(list(range(k)), k)
     return qc
 
 
@@ -263,7 +251,8 @@ class PoissonCircuit:
 
     @property
     def num_ancilla(self) -> int:
-        return self.enc.num_ancilla  # ceil(log2 L) + 1 (flag)
+        # ceil(log2 L) PREP + one wrap flag per spatial dimension
+        return self.enc.num_ancilla - 1 + self.dim
 
     @property
     def num_qubits(self) -> int:
@@ -298,7 +287,7 @@ class PoissonCircuit:
 
         # Registers: one m-qubit register per spatial dimension
         qr_dims = [QuantumRegister(m, f'd{i}') for i in range(dim)]
-        qr_flag = QuantumRegister(1, 'flag')
+        qr_flag = QuantumRegister(dim, 'flag')   # one wrap flag per dimension
         qr_anc  = QuantumRegister(na_prep, 'anc')
 
         # MSB ancilla: system registers first, then flag, then PREP ancilla
@@ -326,7 +315,7 @@ class PoissonCircuit:
 
             # Build a circuit for this SELECT term on (sys + flag) qubits
             # dim*m system + 1 flag = dim*m+1 qubits
-            n_sel = dim * m + 1
+            n_sel = dim * m + dim
             sel_circ = QuantumCircuit(n_sel, global_phase=(0 if sgn > 0 else np.pi),
                                       name=f'SEL_{i}')
 
@@ -337,14 +326,12 @@ class PoissonCircuit:
                 flag_circ  = _flag_correction(m, lbl)
 
                 if lbl != 'I':
-                    # Apply shift on qubits offset..offset+m-1
+                    # Flag first: _flag_correction tests the PRE-shift value.
+                    sel_circ.append(flag_circ.to_gate(),
+                                    list(range(offset, offset + m))
+                                    + [dim * m + d])
                     sel_circ.append(shift_circ.to_gate(),
                                     list(range(offset, offset + m)))
-                    # Update flag: flag qubit is qubit n_sel-1
-                    # flag_circ uses qubits [shift_reg(m), flag]
-                    # here the shift reg for dim d is offset..offset+m-1
-                    sel_circ.append(flag_circ.to_gate(),
-                                    list(range(offset, offset + m)) + [n_sel - 1])
                 offset += m
 
             # Control this whole SELECT block on ancilla = |i⟩
@@ -428,7 +415,7 @@ class ElasticityCircuit:
 
     @property
     def num_ancilla(self) -> int:
-        return self.enc.num_ancilla  # 6  (5 PREP + 1 flag)
+        return self.enc.num_ancilla + 1   # 7  (5 PREP + 2 flag)
 
     @property
     def num_qubits(self) -> int:
@@ -468,11 +455,15 @@ class ElasticityCircuit:
         qr_x    = QuantumRegister(m, 'x')
         qr_y    = QuantumRegister(m, 'y')
         qr_dof  = QuantumRegister(1, 'dof')
-        qr_flag = QuantumRegister(1, 'flag')
+        qr_flag = QuantumRegister(2, 'flag')   # one wrap flag per spatial register
         qr_anc  = QuantumRegister(na_prep, 'anc')
 
         # MSB ancilla: system (x, y, dof) first; flag + PREP ancilla last
-        qc = QuantumCircuit(qr_x, qr_y, qr_dof, qr_flag, qr_anc,
+        # Qiskit gives the FIRST declared register the LOWEST qubit indices,
+        # and qubit 0 is the LSB of the statevector index.  target() uses
+        # index = (jx*N + jy)*2 + d, so d is the LSB and jx the MSB: declare
+        # dof, y, x (then the ancillas).
+        qc = QuantumCircuit(qr_dof, qr_y, qr_x, qr_flag, qr_anc,
                             name='ElasticityQ4')
 
         # ── PREP ──────────────────────────────────────────────────────────
@@ -506,7 +497,7 @@ class ElasticityCircuit:
             sgn = float(np.sign(coeffs[i]))
 
             # Build SELECT sub-circuit on (x + y + dof + flag) = 2m+2 qubits
-            n_sel = 2 * m + 2
+            n_sel = 2 * m + 3
             sel_circ = QuantumCircuit(
                 n_sel,
                 global_phase=(0 if sgn > 0 else np.pi),
@@ -521,18 +512,19 @@ class ElasticityCircuit:
             x_idx   = list(range(m))
             y_idx   = list(range(m, 2 * m))
             dof_idx = [2 * m]
-            flg_idx = [2 * m + 1]
+            flgx_idx = [2 * m + 1]
+            flgy_idx = [2 * m + 2]
 
             # x shift
             if xl != 'I':
-                sel_circ.append(_shift_gate(xl, m).to_gate(), x_idx)
                 sel_circ.append(_flag_correction(m, xl).to_gate(),
-                                x_idx + flg_idx)
+                                x_idx + flgx_idx)
+                sel_circ.append(_shift_gate(xl, m).to_gate(), x_idx)
             # y shift
             if yl != 'I':
-                sel_circ.append(_shift_gate(yl, m).to_gate(), y_idx)
                 sel_circ.append(_flag_correction(m, yl).to_gate(),
-                                y_idx + flg_idx)
+                                y_idx + flgy_idx)
+                sel_circ.append(_shift_gate(yl, m).to_gate(), y_idx)
             # DOF Pauli
             if dl != 'I':
                 sel_circ.append(dof_circuits[dl].to_gate(), dof_idx)
