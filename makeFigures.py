@@ -6,12 +6,14 @@ Place in the repository root (next to pyblockencode/) and run:
 
     python makeFigures.py                # figs/*.pdf, gate counts to m = 6
     python makeFigures.py --mmax 8       # push the scaling figure further
-    python makeFigures.py --mcx          # add the MCX-ladder comparison series
+    python makeFigures.py --no-mcx       # skip the slow MCX-ladder series
 
-The MCX-ladder series is opt-in because it is the expensive half of the run:
-its T-count is superlinear in m where the linear incrementer is affine, so it
-costs 46s at m = 4 and grows fast.  Pass --mcx when regenerating the figure
-for the manuscript; without it fig_scaling shows the linear series alone.
+The MCX-ladder series is the expensive half of the run: its T-count is
+superlinear in m where the linear incrementer is affine, so it costs 46s at
+m = 4 and grows fast.  It is on by default because fig_scaling exists to
+contrast the two constructions, and the single-series version is not the
+figure the manuscript wants.  Pass --no-mcx for a quick regeneration of the
+other figures.
 
 Writes into ./figs/ :
 
@@ -33,7 +35,7 @@ validated for all-pairs CVD separation.
 Nothing is cached: every run transpiles from scratch.  A cache keyed only on
 m silently survives a change to the encoders and hands back gate counts for
 circuits that no longer exist, which is a worse failure than a slow run.  Use
---mmax and --mcx to bound the cost.
+--mmax and --no-mcx to bound the cost.
 """
 from __future__ import annotations
 
@@ -403,9 +405,9 @@ def fig_shear(m: int = 2):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mmax', type=int, default=6)
-    ap.add_argument('--mcx', action='store_true',
-                    help='include the MCX-ladder comparison series; it is the '
-                         'slow half of the run (46s at m=4, superlinear)')
+    ap.add_argument('--no-mcx', action='store_true',
+                    help='skip the MCX-ladder comparison series; it is the '
+                         'slow one, and it grows fast (46s at m=4)')
     args = ap.parse_args()
 
     try:
@@ -415,11 +417,11 @@ def main():
                  "pyblockencode/).")
 
     style()
-    mcx = args.mcx
+    mcx = not args.no_mcx
 
     print("scaling ...")
     if not mcx:
-        print("  (MCX-ladder series omitted; rerun with --mcx for the "
+        print("  (MCX-ladder series omitted; drop --no-mcx for the "
               "manuscript figure)")
     fig_scaling(collect_gatecounts(args.mmax, mcx), mcx)
     print("subnormalization ...")

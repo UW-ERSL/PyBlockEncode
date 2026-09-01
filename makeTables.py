@@ -6,12 +6,7 @@ Place in the repository root (next to pyblockencode/) and run:
 
     python makeTables.py                 # tables/*.tex, gate counts to m = 6
     python makeTables.py --mmax 8        # push the scaling table further
-    python makeTables.py --mcx           # add the MCX-ladder comparison column
-
-The MCX-ladder column is opt-in because it is the expensive half of the run:
-its T-count is superlinear in m where the linear incrementer is affine, so it
-costs 46s at m = 4 and grows fast.  Pass --mcx when regenerating the table for
-the manuscript; without it those columns are dashed out.
+    python makeTables.py --no-mcx        # skip the slow MCX-ladder column
 
 Writes into ./tables/ :
 
@@ -455,9 +450,9 @@ def main():
     ap.add_argument('--mmax', type=int, default=6,
                     help='largest m in the gate-count table (default 6)')
     ap.add_argument('--nu', type=float, default=0.3)
-    ap.add_argument('--mcx', action='store_true',
-                    help='include the MCX-ladder comparison column; it is the '
-                         'slow half of the run (46s at m=4, superlinear)')
+    ap.add_argument('--no-mcx', action='store_true',
+                    help='skip the MCX-ladder comparison column; it is the '
+                         'slow one, and it grows fast (46s at m=4)')
     ap.add_argument('--no-verify', action='store_true',
                     help='skip the verification table (statevector sims)')
     args = ap.parse_args()
@@ -468,7 +463,7 @@ def main():
         sys.exit("Run this from the repository root (the folder holding "
                  "pyblockencode/).")
 
-    mcx = args.mcx
+    mcx = not args.no_mcx
 
     print("LCU terms ...")
     table_lcu(args.nu)
@@ -478,7 +473,7 @@ def main():
 
     print("gate counts ...")
     if not mcx:
-        print("  (MCX-ladder columns omitted; rerun with --mcx for the "
+        print("  (MCX-ladder columns omitted; drop --no-mcx for the "
               "manuscript table)")
     gc = collect_gatecounts(args.mmax, mcx)
     table_gatecounts(gc, mcx)
