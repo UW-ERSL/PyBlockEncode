@@ -101,56 +101,90 @@ COMP_ORDER = {'I': 0, 'Z': 1, 'X': 2, 'iY': 3}
 
 
 def table_lcu(nu: float = 0.3) -> None:
+    """Table 1: the 17 periodic LCU terms, grouped by coefficient.
+
+    Seventeen terms carry only four distinct magnitudes.  The grouping is
+    asserted rather than assumed, so if the decomposition ever changes the
+    table fails loudly instead of printing a wrong caption.
+    """
     from pyblockencode.elasticity_pattern import ElasticityPatternEncoding
 
     # Table 1 of the paper is Proposition 1: the periodic operator, before
-    # any boundary treatment splits the shifts.  Passing bc='essential' here
-    # would produce the correct 49-term encoding and a table too long to
-    # print; the boundary treatments are summarized in tab_boundary instead.
+    # any boundary treatment splits the shifts.
     enc = ElasticityPatternEncoding(m=3, E=1.0, nu=nu, bc='periodic')
     terms = enc.lcu_terms()
-
-    def key(k):
-        xl, yl, dl = k
-        return (COMP_ORDER[dl], ORDER[xl], ORDER[yl])
-
-    rows = []
-    for k in sorted(terms, key=key):
-        xl, yl, dl = k
-        rows.append(f"{SYM[xl]} & {SYM[yl]} & {SYM[dl]} & ${fnum(terms[k])}$ \\\\")
-
-    # count how many terms each channel contributes
-    nI = sum(1 for k in terms if k[2] == 'I')
-    nZ = sum(1 for k in terms if k[2] == 'Z')
-    nX = sum(1 for k in terms if k[2] == 'X')
     assert len(terms) == 17, f"expected the 17 periodic terms, got {len(terms)}"
+
+    def group(key):
+        p_, q_, sg = key
+        if sg == 'I':
+            return 'Ic' if (p_, q_) == ('I', 'I') else 'In'
+        return sg + ('+' if terms[key] > 0 else '-')
+
+    groups: dict = {}
+    for k in terms:
+        groups.setdefault(group(k), []).append(k)
+
+    # every member of a group must share one coefficient
+    for g, ks in groups.items():
+        vals = [terms[k] for k in ks]
+        assert max(vals) - min(vals) < 1e-13, f"group {g} is not uniform"
+
+    # closed forms at E = 1, keyed by group; checked against the encoder below
+    C = 1.0 / (1.0 - nu ** 2)
+    closed = {
+        'Ic': (r'$\dfrac{2(3-\nu)}{3(1-\nu^{2})}$', 2 * (3 - nu) / 3 * C),
+        'In': (r'$-\dfrac{3-\nu}{12(1-\nu^{2})}$', -(3 - nu) / 12 * C),
+        'Z+': (r'$+\dfrac{1}{4(1-\nu)}$', 1 / (4 * (1 - nu))),
+        'Z-': (r'$-\dfrac{1}{4(1-\nu)}$', -1 / (4 * (1 - nu))),
+        'X+': (r'$+\dfrac{1}{8(1-\nu)}$', 1 / (8 * (1 - nu))),
+        'X-': (r'$-\dfrac{1}{8(1-\nu)}$', -1 / (8 * (1 - nu))),
+    }
+    for g, ks in groups.items():
+        assert abs(closed[g][1] - terms[ks[0]]) < 1e-13, \
+            f"closed form for {g} disagrees with the encoder"
+
+    def offsets(g):
+        if g == 'Ic':
+            return r'$(I,I)$, the centre'
+        if g == 'In':
+            return 'all eight neighbours'
+        return ', '.join(f'$({SYM[a][1:-1]},{SYM[b][1:-1]})$'
+                         for a, b, _ in sorted(groups[g]))
+
+    order = ['Ic', 'In', 'Z+', 'Z-', 'X+', 'X-']
+    rows = []
+    for g in order:
+        ks = groups[g]
+        sym_dof = SYM[ks[0][2]]
+        rows.append(f"{sym_dof} & {offsets(g)} & ${len(ks)}$ & "
+                    f"{closed[g][0]} & ${terms[ks[0]]:+.4f}$ \\\\")
 
     body = rf"""\begin{{table}}[t]
 \centering
 \footnotesize
-\setlength{{\tabcolsep}}{{4pt}}
-\renewcommand{{\arraystretch}}{{1.15}}
-\caption{{The {len(terms)} LCU terms of the periodic plane-stress $Q_4$ elasticity
-operator ($E=1$, $\nu={nu}$), grouped by Pauli component.  With $a^K$, $b^M$, $g$ the
-cyclic-shift coefficients of $\mathbf{{K}}_1$, $\mathbf{{M}}_1$, $\mathbf{{G}}_1$
-from Eqs.~\eqref{{eq:K1-shift}}--\eqref{{eq:G1-shift}}, the coefficients are
-$c_{{pqI}} = C\frac{{3-\nu}}{{4}}(a^K_p b^M_q + b^M_p a^K_q)$,
-$c_{{pqZ}} = C\frac{{1+\nu}}{{4}}(a^K_p b^M_q - b^M_p a^K_q)$ and
-$c_{{pqX}} = -C\frac{{1+\nu}}{{2}} g_p g_q$.
-The $Z$ component is antisymmetric under $p\leftrightarrow q$, so it vanishes on
-the three diagonal pairs and on $(S,S^\dagger)$, $(S^\dagger,S)$, leaving {nZ} of
-9 terms; with {nI} in the $I$ component and {nX} in the $X$ component the total
-is {len(terms)}, independent of $\nu$ and $N$.  Imposing boundary conditions
-replaces each shift by a pair of reflected halves without changing $\alpha$;
-see Table~\ref{{tab:boundary}}.}}
+\setlength{{\tabcolsep}}{{5pt}}
+\renewcommand{{\arraystretch}}{{1.45}}
+\caption{{The {len(terms)} LCU terms of the plane-stress $Q_4$ elasticity
+operator at $E = 1$, grouped by coefficient.  $S \equiv \Sc$,
+$S^\dagger \equiv \Scd$, and the shift pair $(V_x, V_y)$ names the stencil
+offset.  {len(terms)} terms carry only {len(order)-2} distinct magnitudes: the
+$I$ component takes one value at the centre and a single common value on all
+eight neighbours, because $a^K_p b^M_q + b^M_p a^K_q = -\tfrac13$ for every
+pair but $(I,I)$.  In the $Z$ and $X$ components the factor $(1+\nu)$ cancels
+against $C = E/(1-\nu^2)$, so those weights depend on $\nu$ only through
+$1/(1-\nu)$.  Summing the four magnitudes with their multiplicities gives
+$\alpha(\nu)$ in~\eqref{{eq:alpha}}.}}
 \label{{tab:lcu}}
-\begin{{tabular}}{{@{{}}lllr@{{}}}}
+\begin{{tabular}}{{@{{}}llccr@{{}}}}
 \toprule
-$V_x$ & $V_y$ & $\sigma_{{\mathrm{{dof}}}}$ & coefficient \\
+$\sigma_{{\mathrm{{dof}}}}$ & stencil offsets $(V_x,V_y)$ & \# &
+  coefficient & $\nu={nu}$ \\
 \midrule
 {chr(10).join(rows)}
 \midrule
-\multicolumn{{3}}{{@{{}}l}}{{$\alpha = \sum|c_{{pqr}}|$}} & ${enc.alpha:.4f}$ \\
+\multicolumn{{2}}{{@{{}}l}}{{$\alpha = \sum_k |c_k|$}} & ${len(terms)}$
+    & $\dfrac{{E(33+\nu)}}{{6(1-\nu^{{2}})}}$ & ${enc.alpha:.4f}$ \\
 \bottomrule
 \end{{tabular}}
 \end{{table}}
