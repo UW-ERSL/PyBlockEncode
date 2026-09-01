@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.egg-info/
@@ -8,6 +9,8 @@ tables/
 figs/
 *.egg
 .paper_cache.json
+
+__pycache__/*.pyc
 
 # Jupyter
 .ipynb_checkpoints/
