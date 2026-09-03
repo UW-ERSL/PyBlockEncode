@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 tables/
+legacy/
 figs/
 *.egg
 .paper_cache.json
