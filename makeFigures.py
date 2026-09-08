@@ -1,4 +1,4 @@
-"""makeFigures.py -- every figure in the paper, generated from blockencode.py.
+"""makeFigures.py -- every figure in the paper, generated from pyblockencode.py.
 
     python makeFigures.py                 all figures
     python makeFigures.py increment       just that one
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 import os
-import itertools
 
 import numpy as np
 from qiskit import QuantumCircuit
@@ -23,14 +22,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
-from blockencode import (blockencode, increment_circuit,
+from pyblockencode import (blockencode, increment_circuit,
                          POISSON2D, ELASTICITY2D,
                          POISSON2D_2PHASE, ELASTICITY2D_2PHASE)
 
 FIGDIR = "figs"
 MPL = {"name": "bw", "creglinecolor": "#000000",
        "fontsize": 13, "subfontsize": 8}
-EDGE, RED, GREY = "#3c3c3c", "#b03030", "#5a5a5a"
+EDGE, RED = "#3c3c3c", "#b03030"
 
 # the four cells of the paper, in the order they are derived, each with the
 # names of its SELECT stages in circuit order: the spatial multiplexers, then
@@ -153,13 +152,13 @@ def fig_inclusion(m: int = 5) -> None:
     ax.set_aspect("equal")
     save(fig, "inclusion")
     xs = np.where(chi.any(axis=1))[0]
-    print(f"       chi from blockencode: centred, span [{xs[0]},{xs[-1] + 1}) "
+    print(f"       chi from pyblockencode: centred, span [{xs[0]},{xs[-1] + 1}) "
           f"of {N}, side {len(xs)}, vf = {chi.mean():.4f}")
 
 
 def fig_mapping(ix: int = 8, iy: int = 3) -> None:
     """The four elements incident on one node. Pure geometry, no circuit."""
-    from blockencode import ELEM_OFFSETS, CORNERS
+    from pyblockencode import ELEM_OFFSETS, CORNERS
     colours = {(0, 0): "#e2dbf0", (-1, 0): "#f9e6d2",
                (0, -1): "#dbead6", (-1, -1): "#d7e5f2"}
     white = dict(facecolor="white", edgecolor="none", alpha=0.85,
@@ -218,9 +217,9 @@ def fig_element(a: int = -1, b: int = 0, cp=(0, 1)) -> None:
     Node i sits at c = -(a,b); the element's own index node is its lower-left
     corner, c' = (0,0). The arrow runs to the node at c', a separation of
     delta = (a,b) + c'. Drawn for the worked instance of Sec. 5, and the
-    indices are checked against blockencode's CORNERS ordering.
+    indices are checked against pyblockencode's CORNERS ordering.
     """
-    from blockencode import CORNERS, ELEM_OFFSETS
+    from pyblockencode import CORNERS, ELEM_OFFSETS
     assert (a, b) in ELEM_OFFSETS and tuple(cp) in CORNERS
     c = (-a, -b)                                # node i's own local corner
     delta = (a + cp[0], b + cp[1])              # nodal separation
@@ -307,6 +306,29 @@ def fig_circuits() -> None:
 # ==========================================================================
 #  Section 8: resources
 # ==========================================================================
+def _affine(ms, ys):
+    """(slope, intercept, first m) of the exact affine law the tail obeys.
+
+    Fitted on two consecutive points and then required to hold exactly at
+    every larger m, so a reported law is a verified one. The two-phase cells
+    depart at m = 2, where the oracle overlaps the incrementer, and the fit
+    starts at m = 3 there; returns None if no tail is affine.
+    """
+    for k in range(len(ms) - 2):
+        a = (ys[k + 1] - ys[k]) / (ms[k + 1] - ms[k])
+        b = ys[k] - a * ms[k]
+        if all(abs(a * m + b - y) < 1e-9 for m, y in zip(ms[k:], ys[k:])):
+            return a, b, ms[k]
+    return None
+
+
+def _law(fit, unit: str) -> str:
+    if fit is None:
+        return f"{unit}: no affine law"
+    a, b, m0 = fit
+    return f"{unit} = {a:.0f}m{b:+.0f} from m = {m0}"
+
+
 def fig_scaling(ms=range(2, 13)) -> None:
     """Two-qubit gate counts against m, measured not fitted."""
     ms = list(ms)
@@ -332,10 +354,9 @@ def fig_scaling(ms=range(2, 13)) -> None:
     fig.tight_layout()
     save(fig, "scaling")
     for label in tof:
-        a = tof[label][1] - tof[label][0]
-        print(f"       {label:<26} Toffoli slope {a}, "
-              f"CX slope {cx[label][1] - cx[label][0]} "
-              f"(m = {ms[0]} to {ms[1]})")
+        print(f"       {label:<26} "
+              f"{_law(_affine(ms, tof[label]), 'Toffoli')}, "
+              f"{_law(_affine(ms, cx[label]), 'CX')}")
 
 
 # ==========================================================================

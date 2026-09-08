@@ -1,0 +1,31 @@
+# PyBlockEncode -- reproduces every table, figure and listing in the paper.
+#   python -m pip install -r requirements.txt
+# Python 3.11 or newer: numpy 2.4 and scipy 1.17 both require it, although
+# qiskit itself still accepts 3.10.
+
+# ------------------------------------------------------------
+# Quantum
+# ------------------------------------------------------------
+qiskit[visualization]==2.5.2   # the version reported in the paper; the
+                               # [visualization] extra carries matplotlib,
+                               # pylatexenc, pydot, Pillow and seaborn
+pylatexenc>=1.4                # LaTeX labels in circuit drawings; also in the
+                               # extra above, pinned here because makeFigures.py
+                               # imports the drawing path directly
+
+# ------------------------------------------------------------
+# Scientific Computing
+# ------------------------------------------------------------
+numpy==2.4.6
+matplotlib>=3.9.0
+# scipy is a qiskit dependency and is imported nowhere in this repository;
+# it is pinned only to fix the environment. 1.18 requires Python >= 3.12.
+scipy==1.17.1; python_version <  "3.12"
+scipy==1.18.0; python_version >= "3.12"
+
+# ------------------------------------------------------------
+# Notes
+# ------------------------------------------------------------
+# PyBlockEncode is standalone: PyEncode is NOT a dependency, and nothing in
+# pyblockencode.py, makeTables.py or makeFigures.py imports it.
+# To run BlockEncode_Tutorial.ipynb, add:  jupyterlab>=4.0

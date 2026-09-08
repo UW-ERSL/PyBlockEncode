@@ -1,5 +1,5 @@
 """
-blockencode -- block encodings of periodic finite-element operators.
+pyblockencode -- block encodings of periodic finite-element operators.
 
 Four operators, periodic boundary conditions only:
 
@@ -26,7 +26,7 @@ and A(nu) = (33 + nu) / (6 (1 - nu^2)) for E = 1.
 
 Usage mirrors PyEncode:
 
-    from blockencode import blockencode, POISSON1D, POISSON2D, ELASTICITY2D
+    from pyblockencode import blockencode, POISSON1D, POISSON2D, ELASTICITY2D
     circuit, info = blockencode(ELASTICITY2D(nu=0.3), N=4096)
     print(info)
 

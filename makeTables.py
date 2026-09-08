@@ -26,10 +26,10 @@ import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit.circuit.library import StatePreparation
 
-from blockencode import (blockencode, PeriodicBlockEncoding, BASIS,
-                         I_, S_, SD_, DI_, DZ_, DX_,
-                         POISSON2D, ELASTICITY2D,
-                         POISSON2D_2PHASE, ELASTICITY2D_2PHASE)
+from pyblockencode import (blockencode, PeriodicBlockEncoding, BASIS,
+                           I_, DI_, DZ_, DX_,
+                           POISSON2D, ELASTICITY2D,
+                           POISSON2D_2PHASE, ELASTICITY2D_2PHASE)
 
 TABDIR = "tables"
 NU, VF, E1, E2 = 0.3, 0.25, 3.0, 1.0
@@ -103,12 +103,26 @@ def norms(be) -> tuple[float, float]:
 # ==========================================================================
 #  Section 3.2: the Poisson cell against a Pauli expansion
 # ==========================================================================
+def _pauli_law(m: int) -> tuple[int, float]:
+    """(L, alpha) of the exact Pauli expansion of the scalar cell at m."""
+    c = pauli_coeffs(PeriodicBlockEncoding(POISSON2D("fe"), m).reference())
+    return int((np.abs(c) > 1e-10).sum()), float(np.abs(c).sum())
+
+
 def tab_poisson_compare(m: int = 12) -> None:
     be = PeriodicBlockEncoding(POISSON2D("fe"), m)
     L_p = int(round(9 / 16 * 4 ** m))
-    a_p = m * m / 3 + 2 * m / 3 + 8 / 3            # verified at m = 2..5
+    a_p = m * m / 3 + 2 * m / 3 + 8 / 3
     n_p = int(np.ceil(np.log2(L_p)))
-    _, two = norms(PeriodicBlockEncoding(POISSON2D("fe"), 5))   # ||K||_2 is m-flat
+    # The two Pauli closed forms are extrapolated to m = 12, so they are
+    # measured where measuring is affordable and only then extrapolated.
+    for mm in (2, 3, 4):
+        L_m, a_m = _pauli_law(mm)
+        assert L_m == round(9 / 16 * 4 ** mm), (mm, L_m)
+        assert abs(a_m - (mm * mm / 3 + 2 * mm / 3 + 8 / 3)) < 1e-9, (mm, a_m)
+    _, two = norms(PeriodicBlockEncoding(POISSON2D("fe"), 5))
+    _, two4 = norms(PeriodicBlockEncoding(POISSON2D("fe"), 4))
+    assert abs(two4 - two) < 1e-9, "||K||_2 should be flat in m"
     r = be.resources()
     write("poisson_compare", "lrr", ["quantity", "Pauli", "shift"], [
         ["terms $L$", f"${L_p:,}$".replace(",", "{,}"), f"${be.L}$"],
@@ -121,7 +135,8 @@ def tab_poisson_compare(m: int = 12) -> None:
          f"${(two / be.alpha) ** 2:.2f}$"],
     ])
     print(f"       L_Pauli = (9/16)4^m = {L_p:,};  alpha_Pauli = {a_p:.4f} "
-          f"(quadratic, checked at m = 2..5);  ||K||_2 = {two:.4f}")
+          f"(both measured exactly at m = 2, 3, 4, then extrapolated);  "
+          f"||K||_2 = {two:.4f}, m-flat")
 
 
 # ==========================================================================
@@ -205,7 +220,8 @@ def tab_qubits() -> None:
     rows = []
     for name, op in CELLS:
         a, b = (PeriodicBlockEncoding(op, m) for m in (4, 9))
-        slope = (b.num_qubits - a.num_qubits) / 5
+        slope, rem = divmod(b.num_qubits - a.num_qubits, 5)
+        assert rem == 0, (name, "qubit count is not affine in m")
         icept = a.num_qubits - slope * 4
         for m in range(2, 11):
             be = PeriodicBlockEncoding(op, m)
