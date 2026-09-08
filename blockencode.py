@@ -7,15 +7,19 @@ Four operators, periodic boundary conditions only:
     'poisson2d_fd'   K1 (x) I + I (x) K1                     L = 5   alpha = 8
     'poisson2d_fe'   K1 (x) M1 + M1 (x) K1                   L = 9   alpha = 16/3
     'elasticity2d'   plane-stress Q4, 2 dof per node         L = 17  alpha = A(nu)
-    'poisson2d_2phase'     two-phase scalar Q4 cell
-    'elasticity2d_2phase'  two-phase plane-stress Q4 cell      L = 57
+    'poisson2d_2phase'     two-phase scalar Q4 cell          L = 25
+                           alpha = (16/3) max(E1,E2)
+    'elasticity2d_2phase'  two-phase plane-stress Q4 cell     L = 57
+                           alpha = [ (E1+E2)(33+nu)/2
+                                     + |E1-E2| (18 + 2nu + 3|1-3nu|) ]
+                                   / (6 (1 - nu^2))
 
 The two-phase operators carry a per-element modulus E = E2 + (E1-E2) chi with
 chi in {0,1}. The material enters only through the four reflections
 R_s = S^(a,b) R_chi S^(-a,-b), R_chi = I - 2 diag(chi), so L and alpha do not
 depend on m, on the microstructure, or on the volume fraction. Only the oracle
-R_chi knows the geometry, and for a dyadic square inclusion it is a single
-multi-controlled Z whose cost is flat in m.
+R_chi knows the geometry, and for a centred dyadic square inclusion it is 4k
+CNOT and a single multi-controlled Z, whose cost is flat in m.
 
 with K1 = circ(-1,2,-1), M1 = (1/6) circ(1,4,1), G1 = (1/2) circ(-1,0,1),
 and A(nu) = (33 + nu) / (6 (1 - nu^2)) for E = 1.
@@ -69,6 +73,7 @@ from typing import ClassVar
 
 import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister, transpile
+from qiskit.circuit import Gate
 from qiskit.circuit.library import StatePreparation
 from qiskit.quantum_info import Statevector
 from qiskit.synthesis import synth_mcx_noaux_v24
@@ -250,8 +255,8 @@ class ELASTICITY2D(_Operator):
 
 @dataclass(frozen=True)
 class POISSON2D_2PHASE(_Operator):
-    """Two-phase scalar Q4 cell, modulus E2 in the matrix and E1 in a dyadic
-    square inclusion of volume fraction vf."""
+    """Two-phase scalar Q4 cell, modulus E2 in the matrix and E1 in a centred
+    dyadic square inclusion of volume fraction vf."""
     vf: float = 0.25
     E1: float = 10.0
     E2: float = 1.0
@@ -279,6 +284,12 @@ class POISSON2D_2PHASE(_Operator):
 
     def alpha(self) -> float:
         return element_alpha(self.element(), 1, self.E1, self.E2)
+
+    def alpha_published(self) -> float:
+        """Closed form. A = B = 16/3 for the scalar element, since the four
+        element contributions at a node never cancel, so the contrast costs
+        nothing beyond scaling to the stiffer phase."""
+        return (16 / 3) * max(self.E1, self.E2)
 
 
 @dataclass(frozen=True)
@@ -315,11 +326,19 @@ class ELASTICITY2D_2PHASE(_Operator):
         return element_alpha(self.element(), 2, self.E1, self.E2)
 
     def alpha_published(self) -> float:
-        """Independent closed form, for cross-checking element_alpha."""
-        nu = self.nu
-        A = (33 + nu) / (6 * (1 - nu ** 2))
-        B = (69 + 5 * nu + 6 * abs(1 - 3 * nu)) / (12 * (1 - nu ** 2))
-        return min(self.E1, self.E2) * A + abs(self.E1 - self.E2) * B
+        """Closed form, for cross-checking element_alpha.
+
+            alpha = [ (E1+E2)(33+nu)/2 + |E1-E2| (18 + 2nu + 3|1-3nu|) ]
+                    / (6 (1 - nu^2))
+
+        equivalently min(E1,E2) A(nu) + |E1-E2| B(nu) with
+        A = (33+nu)/(6(1-nu^2)) and B = (69+5nu+6|1-3nu|)/(12(1-nu^2)).
+        The absolute value is the iY component; it vanishes at nu = 1/3.
+        """
+        nu, E1, E2 = self.nu, self.E1, self.E2
+        return ((E1 + E2) * (33 + nu) / 2
+                + abs(E1 - E2) * (18 + 2 * nu + 3 * abs(1 - 3 * nu))
+                ) / (6 * (1 - nu ** 2))
 
 
 def _inclusion_bits(vf: float) -> int:
@@ -328,13 +347,21 @@ def _inclusion_bits(vf: float) -> int:
 
 
 def _chi_square(vf: float, m: int) -> np.ndarray:
-    """Element indicator of a dyadic square at the origin. chi[ex, ey]."""
+    """Element indicator of a dyadic square CENTRED in the cell. chi[ex, ey].
+
+    Side 2^(m-k) with vf = 4^-k, so the square spans
+    [N/2 - side/2, N/2 + side/2) in each coordinate. Centring costs nothing:
+    the operator is the same up to a relabelling of nodes, and the membership
+    test stays a fixed-width bit test (see PeriodicBlockEncoding._oracle).
+    """
     k = _inclusion_bits(vf)
-    if m < k:
-        raise ValueError(f"vf = {vf} needs m >= {k}, got m = {m}")
+    if m < k + 1:
+        raise ValueError(f"a centred square at vf = {vf} needs m >= {k + 1}, "
+                         f"got m = {m}")
     N, side = 2 ** m, 2 ** (m - k)
+    lo = N // 2 - side // 2
     c = np.zeros((N, N))
-    c[:side, :side] = 1.0
+    c[lo:lo + side, lo:lo + side] = 1.0
     return c
 
 
@@ -378,10 +405,11 @@ CORNERS = [(0, 0), (1, 0), (1, 1), (0, 1)]      # local nodes 0..3, ccw
 R_NONE = 0
 
 
-def _shift_code(d: int) -> int:
-    """Displacement d maps to the operator S^{-d}, since K[i, i+d] means
-    a matrix with ones at (i, i+d), which is S^{-d}."""
-    return I_ if d == 0 else (S_ if d == -1 else SD_)
+def _shift_code(off: int) -> int:
+    """Lattice offset `off` maps to the operator S^{-off}, since K[i, i+off]
+    means a matrix with ones at (i, i+off), which is S^{-off}. Note this is a
+    spatial offset, not the dof index d."""
+    return I_ if off == 0 else (S_ if off == -1 else SD_)
 
 
 def _t_blocks(Ke: np.ndarray, nd: int) -> dict:
@@ -507,19 +535,21 @@ def _mcz(qc, qubits) -> None:
 def _increment(m: int, inverse: bool = False) -> QuantumCircuit:
     """Controlled cyclic increment. 2m-2 Toffoli, m CX, m-1 clean ancillas.
 
-    Qubit order of the returned circuit: [ctrl] + x[0..m-1] + carry[0..m-2],
-    with x[0] the least significant bit.
+    Qubit order of the returned circuit: x[0..m-1] + [s] + carry[0..m-2],
+    with x[0] the least significant bit. The control is named and placed to
+    match the block encoding, where it is the select scratch qubit s: between
+    the register and the carries, so the two drawings read alike.
     """
-    c = QuantumRegister(1, "c")
+    s = QuantumRegister(1, "s")
     x = QuantumRegister(m, "x")
     if m == 1:
-        qc = QuantumCircuit(c, x, name="inc")
-        qc.cx(c[0], x[0])
+        qc = QuantumCircuit(x, s, name="inc")
+        qc.cx(s[0], x[0])
         return qc.inverse() if inverse else qc
 
     a = QuantumRegister(m - 1, "a")
-    qc = QuantumCircuit(c, x, a, name="inc")
-    qc.ccx(c[0], x[0], a[0])                        # carry into bit 1
+    qc = QuantumCircuit(x, s, a, name="inc")
+    qc.ccx(s[0], x[0], a[0])                        # carry into bit 1
     for k in range(2, m):
         qc.ccx(a[k - 2], x[k - 1], a[k - 1])        # carry into bit k
     for k in range(m - 1, 0, -1):
@@ -527,9 +557,22 @@ def _increment(m: int, inverse: bool = False) -> QuantumCircuit:
         if k >= 2:                                  # uncompute that carry
             qc.ccx(a[k - 2], x[k - 1], a[k - 1])
         else:
-            qc.ccx(c[0], x[0], a[0])
-    qc.cx(c[0], x[0])                               # bit 0 always flips
+            qc.ccx(s[0], x[0], a[0])
+    qc.cx(s[0], x[0])                               # bit 0 always flips
     return qc.inverse() if inverse else qc
+
+
+def increment_circuit(m: int, inverse: bool = False) -> QuantumCircuit:
+    """Public alias for the ripple-carry increment, for inspection and plots."""
+    return _increment(m, inverse)
+
+
+def _prep_gate(vec: np.ndarray, name: str, label: str | None = None) -> Gate:
+    """StatePreparation wrapped so that it draws as `label`, not as the vector."""
+    n = int(np.log2(len(vec)))
+    sub = QuantumCircuit(n, name=name)
+    sub.append(StatePreparation(vec), range(n))
+    return sub.to_gate(label=label or name)
 
 
 # ==========================================================================
@@ -596,13 +639,20 @@ class PeriodicBlockEncoding:
         sel = QuantumRegister(1, "s")
         carry = QuantumRegister(self.n_carry, "a") if self.n_carry else None
 
-        order = list(regs) + ([dof] if dof else []) + [prep, sel]
+        # System lowest, so the encoded block is the top-left corner. Among the
+        # ancillas, select and carry sit directly under the system register and
+        # prep takes the most significant qubits, so that a shift reads here
+        # exactly as it does standalone: register, control, carries.
+        order = list(regs) + ([dof] if dof else []) + [sel]
         if carry:
             order.append(carry)
+        order.append(prep)
         qc = QuantumCircuit(*order, name=f"BE[{self.kind},m={m}]")
 
+        # P_L carries the magnitudes and P_R the signs, so P_R^dag is the
+        # adjoint of a different preparation, not the inverse of P_L.
         vL, vR = self._prep_vectors()
-        qc.append(StatePreparation(vL), list(prep))
+        qc.append(_prep_gate(vL, "P_L", "$P_L$"), list(prep))
 
         inc = _increment(m)
         dec = _increment(m, inverse=True)
@@ -635,7 +685,7 @@ class PeriodicBlockEncoding:
                     continue
                 with_select(f, value,
                             lambda c, sub=sub, reg=reg:
-                            qc.compose(sub, qubits=[c] + reg + carry_q,
+                            qc.compose(sub, qubits=reg + [c] + carry_q,
                                        inplace=True))
 
         # multiplexer on the dof qubit
@@ -657,28 +707,42 @@ class PeriodicBlockEncoding:
             shifts = [(fg + 1, list(regs[0])), (fg + 2, list(regs[1]))]
             for f, reg in shifts:
                 with_select(f, 1, lambda c, reg=reg:
-                            qc.compose(dec, qubits=[c] + reg + carry_q,
+                            qc.compose(dec, qubits=reg + [c] + carry_q,
                                        inplace=True))
             with_select(fg, 1, lambda c: self._oracle(qc, c, regs))
             for f, reg in reversed(shifts):
                 with_select(f, 1, lambda c, reg=reg:
-                            qc.compose(inc, qubits=[c] + reg + carry_q,
+                            qc.compose(inc, qubits=reg + [c] + carry_q,
                                        inplace=True))
 
-        qc.append(StatePreparation(vR).inverse(), list(prep))
+        unprep = _prep_gate(vR, "P_R", "$P_R$").inverse()
+        unprep.label = "$P_R^\\dagger$"
+        qc.append(unprep, list(prep))
         return qc
 
     def _oracle(self, qc, ctrl, regs) -> None:
-        """R_chi for a dyadic square at the origin: a phase flip when the top
-        k bits of both coordinates are zero. One multi-controlled Z, and its
-        width 2k+1 depends on the volume fraction alone, not on m."""
-        k = _inclusion_bits(self.operator.vf)
-        tops = [q for r in regs for q in list(r)[self.m - k:]]
-        for q in tops:
-            qc.x(q)
-        _mcz(qc, [ctrl] + tops)
-        for q in tops:
-            qc.x(q)
+        """R_chi for a dyadic square CENTRED in the cell.
+
+        The top k+1 bits of a coordinate name a block of width 2^(m-k-1), and
+        the centred square of side 2^(m-k) is the two blocks numbered
+        2^k - 1 = 0 1...1 and 2^k = 1 0...0. So the coordinate is inside
+        exactly when the k bits below the leading one all DIFFER from it.
+        Copying the leading bit into each of them with a CNOT turns that into
+        "all k bits are one", and the two coordinates are then combined by a
+        single (2k+1)-controlled Z.
+
+        Cost: 4k CNOT and one multi-controlled Z of width 2k+1. Both depend on
+        the volume fraction alone, not on m. At vf = 1/4 this is two CNOT, a
+        Toffoli-derived CZ, and two CNOT to restore the register.
+        """
+        k, m = _inclusion_bits(self.operator.vf), self.m
+        flips = [(list(r)[m - 1], list(r)[m - 1 - j])
+                 for r in regs for j in range(1, k + 1)]
+        for hi, lo in flips:
+            qc.cx(hi, lo)
+        _mcz(qc, [ctrl] + [lo for _, lo in flips])
+        for hi, lo in reversed(flips):
+            qc.cx(hi, lo)
 
     def resources(self, optimization_level: int = 1) -> dict:
         qc = self.circuit()
