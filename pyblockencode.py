@@ -79,6 +79,7 @@ from qiskit.quantum_info import Statevector
 from qiskit.synthesis import synth_mcx_noaux_v24
 
 BASIS = ["cx", "u"]
+OPT_LEVEL = 2          # Qiskit's default; reported counts and verification use it
 TOL = 1e-10
 
 # shift codes: 0 -> I, 1 -> S (increment), 2 -> S^dag (decrement)
@@ -744,7 +745,7 @@ class PeriodicBlockEncoding:
         for hi, lo in reversed(flips):
             qc.cx(hi, lo)
 
-    def resources(self, optimization_level: int = 1) -> dict:
+    def resources(self, optimization_level: int = OPT_LEVEL) -> dict:
         qc = self.circuit()
         raw = qc.count_ops()
         tq = transpile(qc, basis_gates=BASIS, optimization_level=optimization_level)
@@ -787,7 +788,7 @@ class PeriodicBlockEncoding:
                 continue
             qc = self.circuit()
             if tp:
-                qc = transpile(qc, basis_gates=BASIS, optimization_level=1)
+                qc = transpile(qc, basis_gates=BASIS, optimization_level=OPT_LEVEL)
             blk = _top_left_block(qc, self.n_system)
             out[f"block_err_{label}"] = float(np.abs(self.alpha * blk - K).max())
         out["ok"] = all(v <= atol for k, v in out.items() if k != "ok")

@@ -32,13 +32,15 @@ from pyblockencode import (blockencode, PeriodicBlockEncoding, BASIS,
                            POISSON2D_2PHASE, ELASTICITY2D_2PHASE)
 
 TABDIR = "tables"
+BASIS = ["cx", "u"]
+OPT_LEVEL = 2          # Qiskit's default; reported counts and verification use it
 NU, VF, E1, E2 = 0.3, 0.25, 3.0, 1.0
 
 CELLS = [
-    ("scalar, homog.\\", POISSON2D("fe")),
-    ("scalar, 2-phase", POISSON2D_2PHASE(vf=VF, E1=E1, E2=E2)),
-    ("elast., homog.\\", ELASTICITY2D(nu=NU)),
-    ("elast., 2-phase", ELASTICITY2D_2PHASE(nu=NU, vf=VF, E1=E1, E2=E2)),
+    ("2D scalar, homog.\\", POISSON2D("fe")),
+    ("2D scalar, 2-phase", POISSON2D_2PHASE(vf=VF, E1=E1, E2=E2)),
+    ("2D elast., homog.\\", ELASTICITY2D(nu=NU)),
+    ("2D elast., 2-phase", ELASTICITY2D_2PHASE(nu=NU, vf=VF, E1=E1, E2=E2)),
 ]
 
 
@@ -78,7 +80,7 @@ def prep_cost(be) -> tuple[int, int]:
     sub = QuantumCircuit(be.n_prep)
     sub.append(StatePreparation(vR), range(be.n_prep))
     qc.compose(sub.inverse(), inplace=True)
-    t = transpile(qc, basis_gates=BASIS, optimization_level=1)
+    t = transpile(qc, basis_gates=BASIS, optimization_level=OPT_LEVEL)
     return t.count_ops().get("u", 0), t.count_ops().get("cx", 0)
 
 

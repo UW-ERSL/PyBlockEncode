@@ -28,7 +28,7 @@ from pyblockencode import (blockencode, increment_circuit,
 
 FIGDIR = "figs"
 MPL = {"name": "bw", "creglinecolor": "#000000",
-       "fontsize": 13, "subfontsize": 8}
+       "fontsize": 14, "subfontsize": 11}
 EDGE, RED = "#3c3c3c", "#b03030"
 
 # the four cells of the paper, in the order they are derived, each with the
@@ -55,7 +55,10 @@ LEGEND = ["2D scalar, homogeneous", "2D elasticity, homogeneous",
 BETWEEN = "reindex"          # the gap where the prep index is recoded
 M_FIG = 2               # circuits are drawn at this size
 LABEL_STAGES = True     # bracket each SELECT stage with a labelled barrier
-FOLD = 60               # gate columns per row; -1 draws one row
+ROWS = {"sc_hom": 1, "sc_2ph": 2, "el_hom": 2, "el_2ph": 2}   # rows per figure
+WIRE_SIZE = 1.8         # wire labels, relative to Qiskit's size
+STAGE_SIZE = 1.6        # barrier labels, relative to Qiskit's size
+STAGE_LIFT = 0.40       # barrier label baseline above the top wire, in wires
 
 
 
@@ -118,6 +121,29 @@ def label_select_stages(qc, labels, tail=None, between=None, flag="s"):
     return out
 
 
+def labels_for_print(fig) -> None:
+    """Enlarge the wire and barrier labels, and lift the barrier labels.
+
+    Gate text stays at Qiskit's size because the gate boxes are sized for it.
+    Wire labels are the only right-aligned text and barrier labels the only
+    text hung top-and-centre, which is how each is found. Qiskit hangs a
+    barrier label from 0.4225 above the top wire, so it overlaps the gate boxes
+    there, which reach 0.325; it is set instead on a baseline STAGE_LIFT above
+    the wire. Clipping is dropped so labels past the axes limits survive.
+    """
+    for t in fig.axes[0].texts:
+        if t.get_ha() == "right":
+            t.set_fontsize(WIRE_SIZE * t.get_fontsize())
+        elif t.get_va() == "top" and t.get_ha() == "center":
+            x, y = t.get_position()
+            t.set_position((x, y - 0.65 * 0.65 + STAGE_LIFT))
+            t.set_va("bottom")
+            t.set_fontsize(STAGE_SIZE * t.get_fontsize())
+        else:
+            continue
+        t.set_clip_on(False)
+
+
 def save(fig, stem: str) -> None:
     os.makedirs(FIGDIR, exist_ok=True)
     fig.savefig(f"{FIGDIR}/fig_{stem}.pdf", bbox_inches="tight")
@@ -125,9 +151,6 @@ def save(fig, stem: str) -> None:
     print(f"    {FIGDIR}/fig_{stem}.pdf")
 
 
-# ==========================================================================
-#  Section 4: the microstructure and the node-to-element mapping
-# ==========================================================================
 def fig_inclusion(m: int = 5) -> None:
     """The two-phase cell, drawn from the SAME chi the circuit's oracle uses.
 
@@ -176,7 +199,7 @@ def fig_mapping(ix: int = 8, iy: int = 3) -> None:
     for nx in (ix - 1, ix, ix + 1):
         for ny in (iy - 1, iy, iy + 1):
             mid = (nx, ny) == (ix, iy)
-            ax.plot([nx], [ny], "o", markersize=14 if mid else 13,
+            ax.plot([nx], [ny], "o", markersize=14 if mid else 14,
                     color=RED if mid else EDGE, zorder=5)
     for (a, b) in ELEM_OFFSETS:            # each element is named by this node
         ax.plot([ix + a], [iy + b], marker="s", markersize=15,
@@ -282,12 +305,34 @@ def fig_increment(m: int = 4) -> None:
           f"{qc.count_ops().get('cx', 0)} CNOT, {max(m - 1, 0)} clean ancillas")
 
 
+def _fold_for(qc, rows: int) -> int:
+    """Fewest gate columns per row that draw `qc` in `rows` rows.
+
+    Balanced rows make the figure as narrow as the row count allows, so it
+    shrinks least at \\textwidth. Rows are counted from the wire labels,
+    which the drawer repeats once per row.
+    """
+    def n_rows(fold):
+        fig = qc.draw("mpl", style=MPL, fold=fold, scale=0.85)
+        n = sum(t.get_ha() == "right" for t in fig.axes[0].texts)
+        plt.close(fig)
+        return n // qc.num_qubits
+    lo, hi = 2, 4 * len(qc.data)          # hi draws in one row
+    while lo < hi:
+        mid = (lo + hi) // 2
+        lo, hi = (lo, mid) if n_rows(mid) <= rows else (mid + 1, hi)
+    return lo
+
+
 def _one_circuit(stem, op, label, labels=None, tail=None) -> None:
     qc, info = blockencode(op, m=M_FIG, materialize=True)
     v = info.verification
     drawn = (label_select_stages(qc, labels, tail, BETWEEN)
              if labels and LABEL_STAGES else qc)
-    save(drawn.draw("mpl", style=MPL, fold=FOLD, scale=0.85), stem)
+    fig = drawn.draw("mpl", style=MPL, fold=_fold_for(drawn, ROWS[stem]),
+                     scale=0.85)
+    labels_for_print(fig)
+    save(fig, stem)
     print(f"       {label:<26} {info.qubits} qubits, L = {info.L}, "
           f"alpha = {info.alpha:.4f}")
     print(f"       {'':<26} verified: block {v['block_err_circuit']:.1e}, "
