@@ -195,11 +195,11 @@ def fig_mapping(ix: int = 8, iy: int = 3) -> None:
         ax.add_patch(Rectangle((ex, ey), 1, 1, facecolor=colours[(a, b)],
                                edgecolor=EDGE, lw=1.7, zorder=1))
         ax.text(ex + .5, ey + .5, f"$e = ({ex},{ey})$", ha="center",
-                va="center", fontsize=14, color="#1c1c1c", zorder=3)
+                va="center", fontsize=24, color="#1c1c1c", zorder=3)
     for nx in (ix - 1, ix, ix + 1):
         for ny in (iy - 1, iy, iy + 1):
             mid = (nx, ny) == (ix, iy)
-            ax.plot([nx], [ny], "o", markersize=14 if mid else 14,
+            ax.plot([nx], [ny], "o", markersize=24 if mid else 24,
                     color=RED if mid else EDGE, zorder=5)
     for (a, b) in ELEM_OFFSETS:            # each element is named by this node
         ax.plot([ix + a], [iy + b], marker="s", markersize=15,
@@ -222,7 +222,7 @@ def fig_mapping(ix: int = 8, iy: int = 3) -> None:
                     ("bottom" if sy > 0 else "top")
             mid = sx == 0 and sy == 0
             ax.text(nx + dx, ny + dy, f"({nx}, {ny})", ha=ha, va=va,
-                    fontsize=12 if mid else 10.5,
+                    fontsize=24 if mid else 24,
                     color=RED if mid else "#404040",
                     fontweight="bold" if mid else "normal",
                     bbox=white, zorder=8)
@@ -233,65 +233,6 @@ def fig_mapping(ix: int = 8, iy: int = 3) -> None:
     save(fig, "mapping")
     _ = CORNERS
 
-
-def fig_element(a: int = -1, b: int = 0, cp=(0, 1)) -> None:
-    """One element seen from node i: the local corners c', and one delta.
-
-    Node i sits at c = -(a,b); the element's own index node is its lower-left
-    corner, c' = (0,0). The arrow runs to the node at c', a separation of
-    delta = (a,b) + c'. Drawn for the worked instance of Sec. 5, and the
-    indices are checked against pyblockencode's CORNERS ordering.
-    """
-    from pyblockencode import CORNERS, ELEM_OFFSETS
-    assert (a, b) in ELEM_OFFSETS and tuple(cp) in CORNERS
-    c = (-a, -b)                                # node i's own local corner
-    delta = (a + cp[0], b + cp[1])              # nodal separation
-    tint = {(0, 0): "#e2dbf0", (-1, 0): "#f9e6d2",
-            (0, -1): "#dbead6", (-1, -1): "#d7e5f2"}[(a, b)]
-    white = dict(facecolor="white", edgecolor="none", alpha=0.9,
-                 boxstyle="round,pad=0.08")
-    matplotlib.rcParams["font.family"] = "DejaVu Sans"
-    matplotlib.rcParams["mathtext.fontset"] = "dejavuserif"
-
-    fig, ax = plt.subplots(figsize=(4.2, 3.9))
-    ax.add_patch(Rectangle((a, b), 1, 1, facecolor=tint, edgecolor=EDGE,
-                           lw=1.8, zorder=1))
-
-    pos = lambda q: (a + q[0], b + q[1])        # node at local corner q
-    for q in CORNERS:                           # every corner of the element
-        px, py = pos(q)
-        here = (q == c)
-        ax.plot([px], [py], "o", markersize=13 if here else 8,
-                color=RED if here else EDGE, zorder=5)
-        ox = 0.13 if q[0] == 1 else -0.13
-        oy = 0.13 if q[1] == 1 else -0.13
-        ax.text(px + ox, py + oy, f"$c' = ({q[0]},{q[1]})$",
-                ha="left" if q[0] == 1 else "right",
-                va="bottom" if q[1] == 1 else "top",
-                fontsize=11, color="#404040", bbox=white, zorder=8)
-    ax.plot([a], [b], marker="s", markersize=16, markerfacecolor="none",
-            markeredgecolor=EDGE, mew=1.7, zorder=7)      # the index node
-
-    ax.annotate("", xy=pos(cp), xytext=pos(c), zorder=6,
-                arrowprops=dict(arrowstyle="-|>", lw=2.0, color=RED,
-                                shrinkA=11, shrinkB=11))
-    mx, my = (pos(c)[0] + pos(cp)[0]) / 2, (pos(c)[1] + pos(cp)[1]) / 2
-    ax.text(mx - 0.14, my + 0.14, f"$\\delta = ({delta[0]},{delta[1]})$",
-            ha="right", va="bottom", fontsize=12.5, color=RED,
-            bbox=white, zorder=9)
-    ax.text(pos(c)[0] + 0.14, pos(c)[1] - 0.34,
-            f"$i$, at $c = ({c[0]},{c[1]})$", ha="left", va="top",
-            fontsize=12.5, color=RED, fontweight="bold", bbox=white, zorder=9)
-    ax.text(a + 0.5, b + 1.30, f"$(a,b) = ({a},{b})$", ha="center",
-            va="center", fontsize=12.5, color="#1c1c1c", zorder=3)
-
-    ax.set_xlim(a - 0.88, a + 1.72)
-    ax.set_ylim(b - 0.62, b + 1.52)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    save(fig, "element")
-    print(f"       (a,b) = {(a, b)}, c = {c}, c' = {tuple(cp)}, "
-          f"delta = {delta};  k^e[c, c'] entry, operator S^-delta")
 
 
 # ==========================================================================
@@ -406,9 +347,8 @@ def fig_scaling(ms=range(2, 13)) -> None:
 
 # ==========================================================================
 FIGURES = {
-    #"inclusion": (fig_inclusion, "Sec. 4, the two-phase cell"),
+    "inclusion": (fig_inclusion, "Sec. 4, the two-phase cell"),
     "mapping":   (fig_mapping,   "Sec. 4, node-to-element incidence"),
-    #"element":   (fig_element,   "Sec. 5, local corners and delta"),
     "increment": (fig_increment, "Sec. 7, the shift primitive"),
     "circuits":  (fig_circuits,  "Sec. 7, the four encodings at m = 2"),
     "scaling":   (fig_scaling,   "Sec. 8, counts against m"),

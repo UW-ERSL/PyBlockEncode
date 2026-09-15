@@ -6,7 +6,7 @@
 # ------------------------------------------------------------
 # Quantum
 # ------------------------------------------------------------
-qiskit[visualization]==2.5.2   # the version reported in the paper; the
+qiskit[visualization]==2.4.2   # the version reported in the paper; the
                                # [visualization] extra carries matplotlib,
                                # pylatexenc, pydot, Pillow and seaborn
 pylatexenc>=1.4                # LaTeX labels in circuit drawings; also in the
@@ -22,10 +22,3 @@ matplotlib>=3.9.0
 # it is pinned only to fix the environment. 1.18 requires Python >= 3.12.
 scipy==1.17.1; python_version <  "3.12"
 scipy==1.18.0; python_version >= "3.12"
-
-# ------------------------------------------------------------
-# Notes
-# ------------------------------------------------------------
-# PyBlockEncode is standalone: PyEncode is NOT a dependency, and nothing in
-# pyblockencode.py, makeTables.py or makeFigures.py imports it.
-# To run BlockEncode_Tutorial.ipynb, add:  jupyterlab>=4.0

@@ -24,24 +24,21 @@ CNOT and a single multi-controlled Z, whose cost is flat in m.
 with K1 = circ(-1,2,-1), M1 = (1/6) circ(1,4,1), G1 = (1/2) circ(-1,0,1),
 and A(nu) = (33 + nu) / (6 (1 - nu^2)) for E = 1.
 
-Usage mirrors PyEncode:
-
     from pyblockencode import blockencode, POISSON1D, POISSON2D, ELASTICITY2D
     circuit, info = blockencode(ELASTICITY2D(nu=0.3), N=4096)
     print(info)
 
-The operator is a small parameterised object, as a pattern is in PyEncode:
+The operator is a  parameterised object:
 POISSON1D(), POISSON2D('fe'), POISSON2D('fd'), ELASTICITY2D(nu=0.3, E=1.0).
-Material parameters live on the operator, not on the call, so they cannot be
-passed where they are meaningless. Plain strings are accepted too, for
-scripting: 'poisson1d', 'poisson2d_fd', 'poisson2d_fe', 'elasticity2d'.
+ Plain strings are accepted too, for scripting:
+ 'poisson1d', 'poisson2d_fd', 'poisson2d_fe', 'elasticity2d'.
 
 N is the number of grid points PER DIRECTION and must be a power of two, so
 m = log2(N) qubits per direction. The operator itself is larger: N dofs in 1D,
 N^2 in 2D, and 2 N^2 for elasticity, which carries two dofs per node. Pass
 either N or m, not both.
 
-Nothing is materialised unless you ask. `blockencode(...)` builds the circuit
+Nothing is materialised unless requested. `blockencode(...)` builds the circuit
 and reports L, alpha, qubit counts and gate counts without ever forming a
 matrix. `materialize=True` additionally assembles K densely and checks the
 circuit against it, before and after transpilation.
